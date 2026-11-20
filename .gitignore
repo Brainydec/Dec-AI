@@ -1,0 +1,9 @@
+.env
+*.db
+__pycache__/
+.gradle/
+build/
+local.properties
+*.jks
+*.keystore
+*.ppn

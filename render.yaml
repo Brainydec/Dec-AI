@@ -1,0 +1,19 @@
+# Render Blueprint: deploys the DEC backend as a free Docker web service.
+services:
+  - type: web
+    name: dec-backend
+    runtime: docker
+    plan: free
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: DEC_API_TOKEN
+        generateValue: true      # Render creates a random token; copy it into the DEC app
+      - key: GEMINI_API_KEY
+        sync: false              # you paste this in the Render dashboard
+      - key: GROQ_API_KEY
+        sync: false              # optional fallback
+      - key: DEC_PROVIDERS
+        value: gemini,groq

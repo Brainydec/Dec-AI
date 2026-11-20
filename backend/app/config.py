@@ -1,0 +1,16 @@
+import os
+
+
+class Settings:
+    """All secrets come from environment variables. Nothing is hardcoded."""
+
+    api_token = os.environ.get("DEC_API_TOKEN", "")
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    groq_key = os.environ.get("GROQ_API_KEY", "")
+    providers = [p.strip() for p in os.environ.get("DEC_PROVIDERS", "gemini,groq").split(",") if p.strip()]
+    gemini_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    groq_model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+    db_path = os.environ.get("DEC_DB_PATH", "/tmp/dec.db")
+
+
+settings = Settings()
