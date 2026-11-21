@@ -5,10 +5,11 @@ import android.accessibilityservice.AccessibilityServiceInfo
 import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import java.util.Locale
 
 /**
- * User-enabled bridge for basic, visible UI automation.
- * It only acts on the currently visible accessibility tree.
+ * User-enabled bridge for visible Android UI inspection and automation.
+ * Never reads password fields or types into secret fields.
  */
 class AccessibilityControlService : AccessibilityService() {
 
@@ -16,10 +17,14 @@ class AccessibilityControlService : AccessibilityService() {
         super.onServiceConnected()
         serviceInfo = serviceInfo.apply {
             eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
-                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
+                AccessibilityEvent.TYPE_VIEW_SCROLLED or
+                AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED or
+                AccessibilityEvent.TYPE_WINDOWS_CHANGED
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
             flags = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
-                AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+                AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
+                AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
             notificationTimeout = 100
         }
         active = this
@@ -44,26 +49,35 @@ class AccessibilityControlService : AccessibilityService() {
     }
 
     fun tapText(label: String): Boolean {
-        val root = rootInActiveWindow ?: return false
-        val node = root.findAccessibilityNodeInfosByText(label)
-            ?.firstOrNull { it.isVisibleToUser }
-            ?: return false
-        var target: AccessibilityNodeInfo? = node
-        while (target != null) {
-            if (target.isClickable && target.isEnabled) {
-                return target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        val wanted = normalize(label)
+        if (wanted.isBlank()) return false
+        for (root in visibleRoots()) {
+            val match = findTextNode(root, wanted) ?: continue
+            var target: AccessibilityNodeInfo? = match
+            while (target != null) {
+                if (target.isVisibleToUser && target.isClickable && target.isEnabled) {
+                    if (target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+                }
+                target = target.parent
             }
-            target = target.parent
+            if (match.isVisibleToUser && match.isEnabled &&
+                match.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
         }
-        return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        return false
     }
 
     fun typeText(value: String): Boolean {
         val root = rootInActiveWindow ?: return false
-        val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
+        val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            ?: findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            ?: return false
         if (!focused.isEditable || !focused.isEnabled || focused.isPassword) return false
-        val sensitiveHint = focused.hintText?.toString().orEmpty() + " " +
-            focused.viewIdResourceName.orEmpty()
+        val sensitiveHint = listOf(
+            focused.hintText?.toString().orEmpty(),
+            focused.text?.toString().orEmpty(),
+            focused.viewIdResourceName.orEmpty(),
+            focused.contentDescription?.toString().orEmpty()
+        ).joinToString(" ")
         if (Regex("(?i)password|passcode|pin|otp|one.?time.?code|cvv|security.?code").containsMatchIn(sensitiveHint)) return false
         val args = Bundle().apply {
             putCharSequence(
@@ -77,14 +91,47 @@ class AccessibilityControlService : AccessibilityService() {
     fun pressBack(): Boolean = performGlobalAction(GLOBAL_ACTION_BACK)
 
     fun readScreen(): String {
-        val root = rootInActiveWindow ?: return ""
-        val lines = mutableListOf<String>()
-        collectText(root, lines)
-        return lines.distinct().take(60).joinToString(". ").take(1800)
+        val lines = linkedSetOf<String>()
+        for (root in visibleRoots()) {
+            collectText(root, lines, 0)
+            if (lines.size >= 100) break
+        }
+        return lines.take(100).joinToString(". ").take(3500)
+    }
+
+    private fun visibleRoots(): List<AccessibilityNodeInfo> {
+        val roots = mutableListOf<AccessibilityNodeInfo>()
+        runCatching {
+            windows.forEach { window ->
+                window.root?.let { roots += it }
+            }
+        }
+        rootInActiveWindow?.let { activeRoot ->
+            if (roots.none { it.windowId == activeRoot.windowId }) roots.add(0, activeRoot)
+        }
+        return roots
+    }
+
+    private fun normalize(value: String): String =
+        value.lowercase(Locale.ROOT).replace(Regex("\\s+"), " ").trim()
+
+    private fun findTextNode(node: AccessibilityNodeInfo, wanted: String): AccessibilityNodeInfo? {
+        if (!node.isVisibleToUser) return null
+        val text = normalize(node.text?.toString().orEmpty())
+        val description = normalize(node.contentDescription?.toString().orEmpty())
+        if (text == wanted || description == wanted ||
+            (wanted.length >= 3 && (text.contains(wanted) || description.contains(wanted)))) {
+            return node
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            findTextNode(child, wanted)?.let { return it }
+        }
+        return null
     }
 
     private fun findScrollable(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        if (node.isScrollable && node.isEnabled) return node
+        if (node.isVisibleToUser && node.isScrollable && node.isEnabled) return node
         for (i in 0 until node.childCount) {
             val found = node.getChild(i)?.let { findScrollable(it) }
             if (found != null) return found
@@ -92,14 +139,22 @@ class AccessibilityControlService : AccessibilityService() {
         return null
     }
 
-    private fun collectText(node: AccessibilityNodeInfo, out: MutableList<String>) {
+    private fun collectText(
+        node: AccessibilityNodeInfo,
+        out: MutableSet<String>,
+        depth: Int
+    ) {
+        if (depth > 35 || out.size >= 100 || !node.isVisibleToUser) return
+        // Do not expose password or other explicitly secret controls to the assistant.
+        if (node.isPassword) return
         val text = node.text?.toString()?.trim().orEmpty()
         val description = node.contentDescription?.toString()?.trim().orEmpty()
         if (text.isNotEmpty()) out += text
         if (description.isNotEmpty() && description != text) out += description
         for (i in 0 until node.childCount) {
-            node.getChild(i)?.let { collectText(it, out) }
-            if (out.size >= 80) return
+            val child = node.getChild(i) ?: continue
+            collectText(child, out, depth + 1)
+            if (out.size >= 100) return
         }
     }
 
