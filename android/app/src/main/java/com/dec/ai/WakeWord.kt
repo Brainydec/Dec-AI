@@ -1,3 +1,4 @@
+Kotlin
 
 package com.dec.ai
 
@@ -742,4 +743,11 @@ class WakeWord(
                     for (s in stage.sections.indices) {
                         val section = stage.sections[s]
 
-                        stage.s1[s] = section.
+                        stage.s1[s] = state1
+                        stage.s2[s] = state2
+                }
+            }
+        }
+    }
+    }
+    
