@@ -17,7 +17,7 @@ enum class Tool(
     READ_SCREEN("read_screen", "Read screen", Cat.A, "Read visible, non-password screen text."),
     PRESS_BACK("press_back", "Back navigation", Cat.A, "Press Android Back."),
     TAP_SCREEN("tap_screen", "Tap screen", Cat.B, "Tap a named visible control. Always asks first."),
-    TYPE_TEXT("type_text", "Type text", Cat.B, "Type into the currently focused field. Always asks first.");
+    TYPE_TEXT("type_text", "Type text", Cat.B, "Type into the currently focused field. Always asks first."),
     SET_ALARM("set_alarm", "Alarms", Cat.A, "Create alarms in your clock app."),
     SET_TIMER("set_timer", "Timers", Cat.A, "Create timers in your clock app."),
     REMEMBER("remember", "Memory", Cat.A, "Save or forget facts you ask DEC to remember."),
