@@ -16,17 +16,6 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import kotlinx.coroutines.*
 
-/**
- * DEC foreground assistant service.
- *
- * STANDBY: Heed ONNX listens offline for "Hey Deck".
- * LISTENING: Android speech recognition captures the command.
- * THINKING: DEC processes the request.
- * SPEAKING: DEC responds.
- *
- * Wake-word microphone capture is stopped before speech recognition
- * to prevent two components competing for the microphone.
- */
 class DecService : Service() {
 
     private val scope =
@@ -39,6 +28,7 @@ class DecService : Service() {
     private lateinit var wake: WakeWord
 
     private var job: Job? = null
+    @Volatile private var stopping = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -56,6 +46,7 @@ class DecService : Service() {
         wake = WakeWord(this) {
             scope.launch {
                 if (
+                    !stopping &&
                     Dec.state.value == DecState.STANDBY &&
                     !prefs.emergencyStop
                 ) {
@@ -96,7 +87,6 @@ class DecService : Service() {
         } catch (e: Exception) {
             Dec.notice.value =
                 "Could not start DEC: ${e.message}"
-
             stopSelf()
             return START_NOT_STICKY
         }
@@ -105,6 +95,7 @@ class DecService : Service() {
 
             ACTION_STOP,
             ACTION_ESTOP -> {
+                stopping = true
                 job?.cancel()
                 wake.stop()
                 speech.stopSpeaking()
@@ -117,11 +108,9 @@ class DecService : Service() {
 
             ACTION_TALK -> onTap()
 
-            ACTION_INCOMING -> {
-                announce(
-                    intent.getStringExtra("who") ?: "someone"
-                )
-            }
+            ACTION_INCOMING -> announce(
+                intent.getStringExtra("who") ?: "someone"
+            )
 
             else -> {
                 if (
@@ -173,16 +162,8 @@ class DecService : Service() {
             )
             .setContentIntent(open)
             .setOngoing(true)
-            .addAction(
-                0,
-                "Talk",
-                serviceIntent(ACTION_TALK)
-            )
-            .addAction(
-                0,
-                "Stop",
-                serviceIntent(ACTION_STOP)
-            )
+            .addAction(0, "Talk", serviceIntent(ACTION_TALK))
+            .addAction(0, "Stop", serviceIntent(ACTION_STOP))
             .build()
     }
 
@@ -190,14 +171,11 @@ class DecService : Service() {
         return brain.canUseCloud()
     }
 
-    /**
-     * Start offline wake detection.
-     */
     private fun goStandby() {
 
         Dec.level.value = 0f
 
-        if (prefs.emergencyStop) {
+        if (stopping || prefs.emergencyStop) {
             wake.stop()
             Dec.wakeActive.value = false
             Dec.state.value = DecState.OFF
@@ -221,16 +199,13 @@ class DecService : Service() {
         Dec.state.value = DecState.STANDBY
     }
 
-    /**
-     * Orb or notification Talk action.
-     */
     private fun onTap() {
+
+        if (stopping) return
 
         when (Dec.state.value) {
 
-            DecState.SPEAKING -> {
-                speech.stopSpeaking()
-            }
+            DecState.SPEAKING -> speech.stopSpeaking()
 
             DecState.LISTENING,
             DecState.THINKING -> {
@@ -240,15 +215,13 @@ class DecService : Service() {
                 goStandby()
             }
 
-            else -> {
-                startConversation()
-            }
+            else -> startConversation()
         }
     }
 
     private fun startConversation() {
 
-        if (prefs.emergencyStop) return
+        if (stopping || prefs.emergencyStop) return
 
         job?.cancel()
 
@@ -257,9 +230,6 @@ class DecService : Service() {
         }
     }
 
-    /**
-     * Stop wake detection before using speech recognition.
-     */
     private suspend fun conversation() {
 
         wake.stop()
@@ -278,6 +248,7 @@ class DecService : Service() {
 
             while (
                 currentCoroutineContext().isActive &&
+                !stopping &&
                 !prefs.emergencyStop
             ) {
 
@@ -308,10 +279,7 @@ class DecService : Service() {
 
     private suspend fun handle(said: String) {
 
-        Dec.addMessage(
-            Msg(true, said)
-        )
-
+        Dec.addMessage(Msg(true, said))
         Dec.state.value = DecState.THINKING
 
         val response = brain.ask(
@@ -322,14 +290,13 @@ class DecService : Service() {
         Dec.online.value = response.online
 
         if (response.reply.isNotBlank()) {
-            Dec.addMessage(
-                Msg(false, response.reply)
-            )
-
+            Dec.addMessage(Msg(false, response.reply))
             say(response.reply)
         }
 
         for ((tool, args) in response.actions) {
+
+            if (stopping || prefs.emergencyStop) break
 
             Dec.state.value = DecState.THINKING
 
@@ -340,10 +307,7 @@ class DecService : Service() {
             )
 
             if (result.isNotBlank()) {
-                Dec.addMessage(
-                    Msg(false, result)
-                )
-
+                Dec.addMessage(Msg(false, result))
                 say(result)
             }
         }
@@ -352,7 +316,6 @@ class DecService : Service() {
     private suspend fun say(text: String) {
 
         val previous = Dec.state.value
-
         Dec.state.value = DecState.SPEAKING
 
         try {
@@ -380,12 +343,11 @@ class DecService : Service() {
             !negative.containsMatchIn(answer)
     }
 
-    /**
-     * Approval gate. Silence means NO.
-     */
     private suspend fun confirm(
         question: String
     ): Boolean = coroutineScope {
+
+        if (stopping || prefs.emergencyStop) return@coroutineScope false
 
         val decision = CompletableDeferred<Boolean>()
 
@@ -393,15 +355,13 @@ class DecService : Service() {
             decision.complete(it)
         }
 
-        Dec.addMessage(
-            Msg(false, question)
-        )
+        Dec.addMessage(Msg(false, question))
 
         val voice = launch {
 
             say("$question Say yes or no.")
 
-            if (!decision.isCompleted) {
+            if (!decision.isCompleted && !stopping) {
 
                 Dec.state.value = DecState.LISTENING
 
@@ -411,9 +371,7 @@ class DecService : Service() {
                     Msg(true, answer ?: "(no answer)")
                 )
 
-                decision.complete(
-                    isYes(answer)
-                )
+                decision.complete(isYes(answer))
             }
         }
 
@@ -428,6 +386,8 @@ class DecService : Service() {
 
     private fun announce(who: String) {
 
+        if (stopping) return
+
         job?.cancel()
 
         job = scope.launch {
@@ -436,16 +396,13 @@ class DecService : Service() {
             Dec.wakeActive.value = false
 
             try {
-
-                say(
-                    "Incoming call from $who. Say answer or reject."
-                )
+                say("Incoming call from $who. Say answer or reject.")
 
                 Dec.state.value = DecState.LISTENING
 
                 val said = speech.listen(!online())
 
-                if (!said.isNullOrBlank()) {
+                if (!said.isNullOrBlank() && !stopping) {
                     handle(said)
                 }
 
@@ -459,6 +416,7 @@ class DecService : Service() {
 
     override fun onDestroy() {
 
+        stopping = true
         job?.cancel()
         wake.release()
         speech.shutdown()
@@ -472,16 +430,9 @@ class DecService : Service() {
 
     companion object {
 
-        const val ACTION_STOP =
-            "com.dec.ai.STOP"
-
-        const val ACTION_ESTOP =
-            "com.dec.ai.ESTOP"
-
-        const val ACTION_TALK =
-            "com.dec.ai.TALK"
-
-        const val ACTION_INCOMING =
-            "com.dec.ai.INCOMING"
+        const val ACTION_STOP = "com.dec.ai.STOP"
+        const val ACTION_ESTOP = "com.dec.ai.ESTOP"
+        const val ACTION_TALK = "com.dec.ai.TALK"
+        const val ACTION_INCOMING = "com.dec.ai.INCOMING"
     }
 }
