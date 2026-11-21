@@ -9,7 +9,7 @@ class Settings:
     groq_key = os.environ.get("GROQ_API_KEY", "")
     providers = [p.strip() for p in os.environ.get("DEC_PROVIDERS", "gemini,groq").split(",") if p.strip()]
     gemini_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-    groq_model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+    groq_model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b")
     db_path = os.environ.get("DEC_DB_PATH", "/tmp/dec.db")
 
 
