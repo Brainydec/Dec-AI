@@ -1,15 +1,16 @@
 
 package com.dec.ai
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
-import android.os.SystemClock
+import androidx.core.content.ContextCompat
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
-import org.json.JSONObject
 import java.nio.FloatBuffer
 import kotlin.math.PI
 import kotlin.math.abs
@@ -23,195 +24,194 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * Offline Heed wake-word detector.
+ * Heed ONNX offline wake-word detector.
  *
  * Model: assets/wake.onnx
  * Metadata: assets/wake.json
- * Audio: 16 kHz, mono, PCM16
- * Model input: [1, 40, 101]
+ * Input: [1, 40, 101]
+ * Output: logit, converted to probability using sigmoid.
  */
 class WakeWord(
-    private val ctx: Context,
+    private val context: Context,
     private val onWake: () -> Unit
 ) {
+
     companion object {
-        private const val SAMPLE_RATE = 16000
-        private const val WINDOW_SAMPLES = 16000
-        private const val CHUNK_SAMPLES = 1600
-        private const val N_FFT = 512
-        private const val WIN_LENGTH = 400
+        private const val RATE = 16000
+        private const val WINDOW = 16000
+        private const val FFT = 512
         private const val HOP = 160
-        private const val N_MELS = 40
-        private const val N_FRAMES = 101
-        private const val N_BINS = 257
+        private const val MEL = 40
+        private const val FRAMES = 101
+        private const val CHUNK = 1600
+
+        private const val THRESHOLD = 0.653
+        private const val RMS_THRESHOLD = -55.0
+        private const val BAND_THRESHOLD = 0.15
+        private const val CONSECUTIVE = 2
+        private const val REFRACTORY_MS = 700L
     }
 
-    private var environment: OrtEnvironment? = null
-    private var session: OrtSession? = null
-    private var recorder: AudioRecord? = null
-    private var worker: Thread? = null
+    private val lock = Any()
 
     @Volatile
     private var running = false
 
-    private var threshold = 0.653f
-    private var consecutiveFrames = 2
-    private var refractorySeconds = 0.7
-    private var rmsThresholdDbfs = -55.0
-    private var voiceBandMinFraction = 0.15
+    private var worker: Thread? = null
+    private var recorder: AudioRecord? = null
+
+    private var environment: OrtEnvironment? = null
+    private var session: OrtSession? = null
+
+    private val preprocessor = Preprocessor()
 
     private var aboveCount = 0
     private var lastTrigger = 0L
-    private var ema = 0.0
-
-    private val audioWindow = FloatArray(WINDOW_SAMPLES)
-    private var filledSamples = 0
-
-    private val preprocessor = HeedPreprocessor()
 
     fun configured(): Boolean {
         return try {
-            ctx.assets.open("wake.onnx").use { }
-            ctx.assets.open("wake.json").use { }
+            context.assets.open("wake.onnx").use { }
+            context.assets.open("wake.json").use { }
             true
         } catch (_: Exception) {
             false
         }
     }
 
-    @Synchronized
     fun start(): String? {
-        if (running) return null
+        synchronized(lock) {
+            if (running) return null
 
-        if (!configured()) {
-            return "Wake model missing. Check android/app/src/main/assets/"
-        }
+            if (!configured()) {
+                return "Heed wake model missing from app assets."
+            }
 
-        return try {
-            loadMetadata()
-            loadModel()
-            startMicrophone()
-            null
-        } catch (e: Exception) {
-            stop()
-            "Wake-word startup failed: ${e.message}"
+            if (
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.RECORD_AUDIO
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                return "Microphone permission is required for wake detection."
+            }
+
+            try {
+                val env = OrtEnvironment.getEnvironment()
+
+                val modelBytes = context.assets
+                    .open("wake.onnx")
+                    .use { it.readBytes() }
+
+                val options = OrtSession.SessionOptions()
+                val newSession = env.createSession(
+                    modelBytes,
+                    options
+                )
+
+                val minBuffer = AudioRecord.getMinBufferSize(
+                    RATE,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT
+                )
+
+                if (minBuffer <= 0) {
+                    newSession.close()
+                    return "This phone does not support the required microphone format."
+                }
+
+                val audio = AudioRecord(
+                    MediaRecorder.AudioSource.MIC,
+                    RATE,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    max(minBuffer, CHUNK * 4)
+                )
+
+                if (audio.state != AudioRecord.STATE_INITIALIZED) {
+                    audio.release()
+                    newSession.close()
+                    return "Could not initialize the microphone."
+                }
+
+                environment = env
+                session = newSession
+                recorder = audio
+
+                preprocessor.reset()
+                aboveCount = 0
+                lastTrigger = 0L
+
+                running = true
+
+                audio.startRecording()
+
+                worker = Thread {
+                    listenLoop(audio)
+                }.apply {
+                    name = "DEC-Heed-Wake"
+                    isDaemon = true
+                    start()
+                }
+
+                return null
+
+            } catch (e: Exception) {
+                running = false
+                runCatching { recorder?.release() }
+                recorder = null
+                runCatching { session?.close() }
+                session = null
+
+                return "Wake detector could not start: ${e.message}"
+            }
         }
     }
 
-    private fun loadMetadata() {
-        val json = ctx.assets.open("wake.json")
-            .bufferedReader()
-            .use { it.readText() }
+    fun stop() {
+        val oldWorker: Thread?
+        val oldRecorder: AudioRecord?
 
-        val meta = JSONObject(json)
-
-        threshold = meta.optDouble("threshold", 0.653).toFloat()
-
-        val trigger = meta.optJSONObject("trigger")
-        consecutiveFrames = trigger?.optInt("consecutive_frames", 2) ?: 2
-        refractorySeconds =
-            trigger?.optDouble("refractory_seconds", 0.7) ?: 0.7
-
-        val gate = meta.optJSONObject("energy_gate")
-        rmsThresholdDbfs =
-            gate?.optDouble("rms_threshold_dbfs", -55.0) ?: -55.0
-        voiceBandMinFraction =
-            gate?.optDouble("voice_band_min_fraction", 0.15) ?: 0.15
-
-        if (meta.optInt("sample_rate", 16000) != SAMPLE_RATE ||
-            meta.optInt("n_mels", 40) != N_MELS ||
-            meta.optInt("n_fft", 512) != N_FFT ||
-            meta.optInt("window_frames", 100) != 100
-        ) {
-            throw IllegalStateException("Unsupported wake.json audio settings")
+        synchronized(lock) {
+            running = false
+            oldWorker = worker
+            oldRecorder = recorder
+            worker = null
+            recorder = null
         }
 
-        if (consecutiveFrames < 1) consecutiveFrames = 2
+        runCatching { oldRecorder?.stop() }
+
+        if (oldWorker != null && oldWorker !== Thread.currentThread()) {
+            runCatching {
+                oldWorker.join(1200)
+            }
+        }
+
+        runCatching { oldRecorder?.release() }
+
+        synchronized(lock) {
+            preprocessor.reset()
+            aboveCount = 0
+        }
     }
 
-    private fun loadModel() {
-        if (session != null) return
+    fun release() {
+        stop()
 
-        val bytes = ctx.assets.open("wake.onnx")
-            .use { it.readBytes() }
+        synchronized(lock) {
+            runCatching { session?.close() }
+            session = null
 
-        val env = OrtEnvironment.getEnvironment()
-        val options = OrtSession.SessionOptions()
+            runCatching { environment?.close() }
+            environment = null
+        }
+    }
+
+    private fun listenLoop(audio: AudioRecord) {
+        val pcm = ShortArray(CHUNK)
 
         try {
-            session = env.createSession(bytes, options)
-            environment = env
-        } finally {
-            options.close()
-        }
-
-        val input = session!!.inputInfo["mel"]
-            ?: throw IllegalStateException("Model input 'mel' not found")
-
-        val shape = input.info as ai.onnxruntime.TensorInfo
-
-        if (shape.shape.size != 3 ||
-            shape.shape[1] != N_MELS.toLong() ||
-            shape.shape[2] != N_FRAMES.toLong()
-        ) {
-            throw IllegalStateException(
-                "Unexpected model input shape: ${shape.shape.contentToString()}"
-            )
-        }
-    }
-
-    private fun startMicrophone() {
-        val minBuffer = AudioRecord.getMinBufferSize(
-            SAMPLE_RATE,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT
-        )
-
-        if (minBuffer <= 0) {
-            throw IllegalStateException("Invalid microphone buffer size")
-        }
-
-        val audio = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_RECOGNITION,
-            SAMPLE_RATE,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            max(minBuffer, CHUNK_SAMPLES * 4)
-        )
-
-        if (audio.state != AudioRecord.STATE_INITIALIZED) {
-            audio.release()
-            throw IllegalStateException("Could not initialize microphone")
-        }
-
-        audio.startRecording()
-
-        if (audio.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-            audio.release()
-            throw IllegalStateException("Microphone did not start")
-        }
-
-        recorder = audio
-        running = true
-        aboveCount = 0
-        lastTrigger = 0L
-        ema = 0.0
-        filledSamples = 0
-        audioWindow.fill(0f)
-        preprocessor.reset()
-
-        worker = Thread({
-            microphoneLoop(audio)
-        }, "DEC-Heed-Wake").also {
-            it.start()
-        }
-    }
-
-    private fun microphoneLoop(audio: AudioRecord) {
-        val pcm = ShortArray(CHUNK_SAMPLES)
-
-        try {
-            while (running && !Thread.currentThread().isInterrupted) {
+            while (running) {
                 val count = audio.read(
                     pcm,
                     0,
@@ -221,208 +221,426 @@ class WakeWord(
 
                 if (count <= 0) continue
 
-                val chunk = FloatArray(count)
-
-                for (i in 0 until count) {
-                    chunk[i] = pcm[i] / 32768.0f
+                val samples = FloatArray(count) { i ->
+                    pcm[i] / 32768.0f
                 }
 
-                processAudio(chunk)
+                preprocessor.ingest(samples)
+
+                if (!energyGate()) {
+                    aboveCount = 0
+                    continue
+                }
+
+                val features = preprocessor.computeMel()
+                val probability = predict(features)
+
+                if (probability > THRESHOLD) {
+                    aboveCount++
+                } else {
+                    aboveCount = 0
+                }
+
+                val now = System.currentTimeMillis()
+
+                if (
+                    aboveCount >= CONSECUTIVE &&
+                    now - lastTrigger > REFRACTORY_MS
+                ) {
+                    lastTrigger = now
+                    aboveCount = 0
+                    onWake()
+                }
             }
         } catch (_: Exception) {
             if (running) {
-                android.util.Log.e(
-                    "DEC-WAKE",
-                    "Microphone processing stopped unexpectedly"
-                )
+                running = false
             }
         }
     }
 
-    private fun processAudio(chunk: FloatArray) {
-        preprocessor.ingest(chunk)
+    private fun predict(features: FloatArray): Double {
+        val env = environment ?: return 0.0
+        val ort = session ?: return 0.0
 
-        if (chunk.size >= WINDOW_SAMPLES) {
-            System.arraycopy(
-                chunk,
-                chunk.size - WINDOW_SAMPLES,
-                audioWindow,
-                0,
-                WINDOW_SAMPLES
-            )
-            filledSamples = WINDOW_SAMPLES
-        } else {
-            val shift = chunk.size
-            System.arraycopy(
-                audioWindow,
-                shift,
-                audioWindow,
-                0,
-                WINDOW_SAMPLES - shift
-            )
-            System.arraycopy(
-                chunk,
-                0,
-                audioWindow,
-                WINDOW_SAMPLES - shift,
-                shift
-            )
-            filledSamples = min(
-                WINDOW_SAMPLES,
-                filledSamples + shift
-            )
-        }
+        val input = OnnxTensor.createTensor(
+            env,
+            FloatBuffer.wrap(features),
+            longArrayOf(1, MEL.toLong(), FRAMES.toLong())
+        )
 
-        if (filledSamples < WINDOW_SAMPLES) return
+        input.use {
+            ort.run(mapOf("mel" to input)).use { result ->
+                val output = result[0].value
+                val logit = when (output) {
+                    is FloatArray -> output[0].toDouble()
+                    is Array<*> -> {
+                        val first = output[0]
+                        when (first) {
+                            is FloatArray -> first[0].toDouble()
+                            is Number -> first.toDouble()
+                            else -> 0.0
+                        }
+                    }
+                    is Number -> output.toDouble()
+                    else -> 0.0
+                }
 
-        if (!energyGate()) {
-            aboveCount = 0
-            ema *= 0.5
-            return
-        }
-
-        val features = preprocessor.computeMel()
-        val logit = runModel(features)
-        val probability = sigmoid(logit)
-
-        ema = 0.5 * probability + 0.5 * ema
-
-        if (probability > threshold) {
-            aboveCount++
-        } else {
-            aboveCount = 0
-        }
-
-        val now = SystemClock.elapsedRealtime()
-
-        if (
-            aboveCount >= consecutiveFrames &&
-            (lastTrigger == 0L ||
-                now - lastTrigger >= (refractorySeconds * 1000).toLong())
-        ) {
-            aboveCount = 0
-            lastTrigger = now
-
-            android.util.Log.i(
-                "DEC-WAKE",
-                "Wake word detected: probability=$probability"
-            )
-
-            onWake()
+                return 1.0 / (1.0 + exp(-logit))
+            }
         }
     }
 
+    /**
+     * RMS and voice-band power gate.
+     * Operates on the filtered one-second audio buffer.
+     */
     private fun energyGate(): Boolean {
-        var sumSq = 0.0
+        val audio = preprocessor.filteredBuffer
 
-        for (sample in audioWindow) {
-            sumSq += sample.toDouble() * sample
+        var sum = 0.0
+
+        for (sample in audio) {
+            sum += sample * sample
         }
 
-        val rms = sqrt(sumSq / WINDOW_SAMPLES)
+        val rms = sqrt(sum / audio.size)
 
-        val dbfs = if (rms < 1e-9) {
-            -120.0
+        val db = if (rms < 1e-9) {
+            Double.NEGATIVE_INFINITY
         } else {
             20.0 * log10(rms)
         }
 
-        if (dbfs < rmsThresholdDbfs) return false
+        if (db < RMS_THRESHOLD) return false
 
         var lowPass = 0.0
-        var bandSumSq = 0.0
+        var bandPower = 0.0
 
-        for (sample in audioWindow) {
-            lowPass += 0.936 * (sample - lowPass)
-            bandSumSq += lowPass * lowPass
+        val alpha = 0.936
+
+        for (sample in audio) {
+            lowPass += alpha * (sample - lowPass)
+            bandPower += lowPass * lowPass
         }
 
-        val fraction = bandSumSq / (sumSq + 1e-12)
+        val fraction = bandPower / (sum + 1e-12)
 
-        return fraction >= voiceBandMinFraction
-    }
-
-    private fun runModel(features: FloatArray): Float {
-        val env = environment
-            ?: throw IllegalStateException("ONNX environment unavailable")
-
-        val activeSession = session
-            ?: throw IllegalStateException("ONNX model unavailable")
-
-        val tensor = OnnxTensor.createTensor(
-            env,
-            FloatBuffer.wrap(features),
-            longArrayOf(1, N_MELS.toLong(), N_FRAMES.toLong())
-        )
-
-        tensor.use {
-            activeSession.run(mapOf("mel" to tensor)).use { result ->
-                val output = result[0].value as FloatArray
-                return output[0]
-            }
-        }
-    }
-
-    private fun sigmoid(value: Float): Double {
-        return if (value >= 0f) {
-            1.0 / (1.0 + exp(-value.toDouble()))
-        } else {
-            val e = exp(value.toDouble())
-            e / (1.0 + e)
-        }
-    }
-
-    @Synchronized
-    fun stop() {
-        running = false
-
-        try {
-            recorder?.stop()
-        } catch (_: Exception) {
-        }
-
-        try {
-            worker?.interrupt()
-            worker?.join(1000)
-        } catch (_: Exception) {
-        }
-
-        try {
-            recorder?.release()
-        } catch (_: Exception) {
-        }
-
-        recorder = null
-        worker = null
-        filledSamples = 0
-        aboveCount = 0
-        preprocessor.reset()
-    }
-
-    @Synchronized
-    fun release() {
-        stop()
-
-        try {
-            session?.close()
-        } catch (_: Exception) {
-        }
-
-        session = null
-
-        try {
-            environment?.close()
-        } catch (_: Exception) {
-        }
-
-        environment = null
+        return fraction >= BAND_THRESHOLD
     }
 
     /**
-     * Heed-compatible streaming log-mel preprocessing.
-     * Produces bin-major Float32Array[40 * 101].
+     * Heed streaming preprocessing:
+     * causal HPF + 50/60 Hz notch,
+     * 1-second filtered ring buffer,
+     * STFT + mel + CMN.
      */
-    private class HeedPreprocessor {
+    private class Preprocessor {
+
+        val filteredBuffer = FloatArray(WINDOW)
+
+        private val melBuffer =
+            FloatArray(MEL * FRAMES)
+
+        private var pendingSamples = 0
+        private var initialized = false
+
+        private val cascade = FilterCascade()
+
+        private val real = DoubleArray(FFT)
+        private val imag = DoubleArray(FFT)
+        private val spectrum = DoubleArray(FFT / 2 + 1)
+
+        private val output =
+            FloatArray(MEL * FRAMES)
+
+        private val window = DoubleArray(FFT)
+
+        private val melWeights: Array<Array<Pair<Int, Double>>> =
+            buildMelWeights()
+
+        init {
+            val offset = (FFT - 400) / 2
+
+            for (n in 0 until 400) {
+                window[offset + n] =
+                    0.5 - 0.5 * cos(2.0 * PI * n / 400.0)
+            }
+        }
+
+        fun reset() {
+            filteredBuffer.fill(0f)
+            melBuffer.fill(0f)
+            pendingSamples = 0
+            initialized = false
+            cascade.reset()
+        }
+
+        fun ingest(samples: FloatArray) {
+            if (samples.isEmpty()) return
+
+            val filtered = DoubleArray(samples.size) {
+                samples[it].toDouble()
+            }
+
+            cascade.process(filtered)
+
+            val n = filtered.size
+
+            if (n >= WINDOW) {
+                val start = n - WINDOW
+
+                for (i in 0 until WINDOW) {
+                    filteredBuffer[i] =
+                        filtered[start + i].toFloat()
+                }
+
+                pendingSamples = WINDOW
+            } else {
+                filteredBuffer.copyInto(
+                    filteredBuffer,
+                    0,
+                    n,
+                    WINDOW
+                )
+
+                for (i in 0 until n) {
+                    filteredBuffer[WINDOW - n + i] =
+                        filtered[i].toFloat()
+                }
+
+                pendingSamples =
+                    min(WINDOW, pendingSamples + n)
+            }
+        }
+
+        fun computeMel(): FloatArray {
+            val advance = min(
+                FRAMES,
+                pendingSamples / HOP
+            )
+
+            pendingSamples -= advance * HOP
+
+            if (!initialized || advance >= FRAMES - 3) {
+                for (i in 0 until FRAMES) {
+                    computeFrame(i)
+                }
+
+                initialized = true
+
+            } else if (advance > 0) {
+                shiftAndRecompute(advance)
+            }
+
+            return cmn()
+        }
+
+        private fun shiftAndRecompute(advance: Int) {
+            for (m in 0 until MEL) {
+                val base = m * FRAMES
+
+                for (f in 0 until FRAMES - advance) {
+                    melBuffer[base + f] =
+                        melBuffer[base + f + advance]
+                }
+            }
+
+            computeFrame(0)
+            computeFrame(1)
+
+            val start = max(
+                2,
+                FRAMES - advance - 2
+            )
+
+            for (i in start until FRAMES) {
+                computeFrame(i)
+            }
+        }
+
+        private fun computeFrame(frame: Int) {
+            val low = frame * HOP - FFT / 2
+
+            for (n in 0 until FFT) {
+                var index = low + n
+
+                if (index < 0) {
+                    index = -index
+                } else if (index >= WINDOW) {
+                    index = 2 * (WINDOW - 1) - index
+                }
+
+                index = index.coerceIn(0, WINDOW - 1)
+
+                real[n] =
+                    filteredBuffer[index].toDouble() * window[n]
+
+                imag[n] = 0.0
+            }
+
+            fft()
+
+            for (k in spectrum.indices) {
+                val r = real[k]
+                val im = imag[k]
+
+                spectrum[k] = r * r + im * im
+            }
+
+            for (m in 0 until MEL) {
+                var sum = 0.0
+
+                for ((bin, weight) in melWeights[m]) {
+                    sum += weight * spectrum[bin]
+                }
+
+                melBuffer[m * FRAMES + frame] =
+                    ln(max(sum, 1e-9)).toFloat()
+            }
+        }
+
+        private fun cmn(): FloatArray {
+            for (m in 0 until MEL) {
+                val base = m * FRAMES
+
+                var sum = 0.0
+
+                for (f in 0 until FRAMES) {
+                    sum += melBuffer[base + f]
+                }
+
+                val mean = sum / FRAMES
+
+                for (f in 0 until FRAMES) {
+                    output[base + f] =
+                        (melBuffer[base + f] - mean).toFloat()
+                }
+            }
+
+            return output
+        }
+
+        private fun fft() {
+            var j = 0
+
+            for (i in 1 until FFT) {
+                var bit = FFT shr 1
+
+                while ((j and bit) != 0) {
+                    j = j xor bit
+                    bit = bit shr 1
+                }
+
+                j = j xor bit
+
+                if (i < j) {
+                    val tr = real[i]
+                    real[i] = real[j]
+                    real[j] = tr
+
+                    val ti = imag[i]
+                    imag[i] = imag[j]
+                    imag[j] = ti
+                }
+            }
+
+            var length = 2
+
+            while (length <= FFT) {
+                val half = length / 2
+                val step = FFT / length
+
+                for (start in 0 until FFT step length) {
+                    for (k in 0 until half) {
+                        val angle =
+                            -2.0 * PI * k * step / FFT
+
+                        val wr = cos(angle)
+                        val wi = sin(angle)
+
+                        val a = start + k
+                        val b = a + half
+
+                        val xr =
+                            real[b] * wr - imag[b] * wi
+
+                        val xi =
+                            real[b] * wi + imag[b] * wr
+
+                        real[b] = real[a] - xr
+                        imag[b] = imag[a] - xi
+
+                        real[a] += xr
+                        imag[a] += xi
+                    }
+                }
+
+                length *= 2
+            }
+        }
+
+        /**
+         * Same HTK mel filterbank construction as heed/audio.py.
+         */
+        private fun buildMelWeights():
+            Array<Array<Pair<Int, Double>>> {
+
+            fun hzToMel(hz: Double): Double =
+                2595.0 * log10(1.0 + hz / 700.0)
+
+            fun melToHz(mel: Double): Double =
+                700.0 * (10.0.pow10(mel / 2595.0) - 1.0)
+
+            val minMel = hzToMel(0.0)
+            val maxMel = hzToMel(8000.0)
+
+            val points = DoubleArray(MEL + 2) {
+                melToHz(
+                    minMel +
+                        (maxMel - minMel) * it / (MEL + 1)
+                )
+            }
+
+            return Array(MEL) { m ->
+                val left = points[m]
+                val center = points[m + 1]
+                val right = points[m + 2]
+
+                val pairs = ArrayList<Pair<Int, Double>>()
+
+                for (bin in 0..FFT / 2) {
+                    val hz = bin * RATE.toDouble() / FFT
+
+                    val rising =
+                        (hz - left) / (center - left + 1e-9)
+
+                    val falling =
+                        (right - hz) / (right - center + 1e-9)
+
+                    val weight = max(
+                        0.0,
+                        min(rising, falling)
+                    )
+
+                    if (weight > 0.0) {
+                        pairs.add(bin to weight)
+                    }
+                }
+
+                pairs.toTypedArray()
+            }
+        }
+
+        private fun Double.pow10(power: Double): Double =
+            kotlin.math.pow(10.0, power)
+    }
+
+    /**
+     * Exact Heed SOS coefficients.
+     * Direct Form II Transposed, with retained streaming state.
+     */
+    private class FilterCascade {
 
         private data class Section(
             val b0: Double,
@@ -434,54 +652,16 @@ class WakeWord(
             val zi2: Double
         )
 
-        private class Stage(val sections: List<Section>) {
+        private class Stage(
+            val sections: List<Section>
+        ) {
             val s1 = DoubleArray(sections.size)
             val s2 = DoubleArray(sections.size)
             var initialized = false
-
-            fun reset() {
-                s1.fill(0.0)
-                s2.fill(0.0)
-                initialized = false
-            }
-
-            fun process(data: DoubleArray) {
-                if (data.isEmpty()) return
-
-                if (!initialized) {
-                    val first = data[0]
-                    for (i in sections.indices) {
-                        s1[i] = sections[i].zi1 * first
-                        s2[i] = sections[i].zi2 * first
-                    }
-                    initialized = true
-                }
-
-                for (sectionIndex in sections.indices) {
-                    val section = sections[sectionIndex]
-                    var state1 = s1[sectionIndex]
-                    var state2 = s2[sectionIndex]
-
-                    for (i in data.indices) {
-                        val x = data[i]
-                        val y = section.b0 * x + state1
-
-                        state1 =
-                            section.b1 * x + state2 - section.a1 * y
-
-                        state2 =
-                            section.b2 * x - section.a2 * y
-
-                        data[i] = y
-                    }
-
-                    s1[sectionIndex] = state1
-                    s2[sectionIndex] = state2
-                }
-            }
         }
 
         private val stages = listOf(
+
             Stage(
                 listOf(
                     Section(
@@ -513,6 +693,7 @@ class WakeWord(
                     )
                 )
             ),
+
             Stage(
                 listOf(
                     Section(
@@ -526,6 +707,7 @@ class WakeWord(
                     )
                 )
             ),
+
             Stage(
                 listOf(
                     Section(
@@ -541,190 +723,23 @@ class WakeWord(
             )
         )
 
-        private val filtered = FloatArray(16000)
-        private val hann = DoubleArray(512)
-        private val melWeights = Array(40) { DoubleArray(257) }
-        private val melBuffer = Array(40) { DoubleArray(101) }
-
-        private val real = DoubleArray(512)
-        private val imaginary = DoubleArray(512)
-        private val bitReverse = IntArray(512)
-
-        private val output = FloatArray(40 * 101)
-
-        init {
-            buildHann()
-            buildMelFilterbank()
-            buildFftTables()
-        }
-
         fun reset() {
-            stages.forEach { it.reset() }
-            filtered.fill(0f)
-            melBuffer.forEach { it.fill(0.0) }
-        }
-
-        fun ingest(chunk: FloatArray) {
-            if (chunk.isEmpty()) return
-
-            val data = DoubleArray(chunk.size) {
-                chunk[it].toDouble()
-            }
-
-            stages.forEach { it.process(data) }
-
-            if (data.size >= 16000) {
-                val start = data.size - 16000
-                for (i in 0 until 16000) {
-                    filtered[i] = data[start + i].toFloat()
-                }
-            } else {
-                val shift = data.size
-
-                System.arraycopy(
-                    filtered,
-                    shift,
-                    filtered,
-                    0,
-                    16000 - shift
-                )
-
-                for (i in data.indices) {
-                    filtered[16000 - shift + i] = data[i].toFloat()
-                }
+            for (stage in stages) {
+                stage.s1.fill(0.0)
+                stage.s2.fill(0.0)
+                stage.initialized = false
             }
         }
 
-        fun computeMel(): FloatArray {
-            for (frame in 0 until 101) {
-                computeFrame(frame)
-            }
+        fun process(samples: DoubleArray) {
+            if (samples.isEmpty()) return
 
-            for (mel in 0 until 40) {
-                var sum = 0.0
+            for (stage in stages) {
 
-                for (frame in 0 until 101) {
-                    sum += melBuffer[mel][frame]
-                }
+                if (!stage.initialized) {
+                    val first = samples[0]
 
-                val mean = sum / 101.0
-                val base = mel * 101
+                    for (s in stage.sections.indices) {
+                        val section = stage.sections[s]
 
-                for (frame in 0 until 101) {
-                    output[base + frame] =
-                        (melBuffer[mel][frame] - mean).toFloat()
-                }
-            }
-
-            return output
-        }
-
-        private fun buildHann() {
-            for (i in 0 until 400) {
-                hann[56 + i] =
-                    0.5 - 0.5 * cos(2.0 * PI * i / 400.0)
-            }
-        }
-
-        private fun hzToMel(hz: Double): Double {
-            return 2595.0 * log10(1.0 + hz / 700.0)
-        }
-
-        private fun melToHz(mel: Double): Double {
-            return 700.0 * (10.0.pow10(mel / 2595.0) - 1.0)
-        }
-
-        private fun buildMelFilterbank() {
-            val melMin = hzToMel(0.0)
-            val melMax = hzToMel(8000.0)
-
-            val points = DoubleArray(42) { i ->
-                melToHz(
-                    melMin + (melMax - melMin) * i / 41.0
-                )
-            }
-
-            for (mel in 0 until 40) {
-                val left = points[mel]
-                val center = points[mel + 1]
-                val right = points[mel + 2]
-
-                for (bin in 0 until 257) {
-                    val frequency = bin * 8000.0 / 256.0
-
-                    val rising =
-                        (frequency - left) / (center - left + 1e-9)
-
-                    val falling =
-                        (right - frequency) / (right - center + 1e-9)
-
-                    melWeights[mel][bin] =
-                        max(0.0, min(rising, falling))
-                }
-            }
-        }
-
-        private fun Double.pow10(power: Double): Double {
-            return 10.0.pow(power)
-        }
-
-        private fun buildFftTables() {
-            for (i in 0 until 512) {
-                var x = i
-                var reversed = 0
-
-                repeat(9) {
-                    reversed = (reversed shl 1) or (x and 1)
-                    x = x shr 1
-                }
-
-                bitReverse[i] = reversed
-            }
-        }
-
-        private fun fft() {
-            for (i in 0 until 512) {
-                val j = bitReverse[i]
-
-                if (j > i) {
-                    val r = real[i]
-                    real[i] = real[j]
-                    real[j] = r
-
-                    val im = imaginary[i]
-                    imaginary[i] = imaginary[j]
-                    imaginary[j] = im
-                }
-            }
-
-            var length = 2
-
-            while (length <= 512) {
-                val half = length / 2
-                val step = 512 / length
-
-                var start = 0
-
-                while (start < 512) {
-                    for (k in 0 until half) {
-                        val angle = -2.0 * PI * k / length
-                        val wr = cos(angle)
-                        val wi = sin(angle)
-
-                        val a = start + k
-                        val b = a + half
-
-                        val xr =
-                            real[b] * wr - imaginary[b] * wi
-
-                        val xi =
-                            real[b] * wi + imaginary[b] * wr
-
-                        real[b] = real[a] - xr
-                        imaginary[b] = imaginary[a] - xi
-
-                        real[a] += xr
-                        imaginary[a] += xi
-                    }
-
-                  
+                        stage.s1[s] = section.
