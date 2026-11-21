@@ -46,6 +46,11 @@ class Brain(private val ctx: Context) {
     suspend fun ask(text: String, history: List<Msg>): BrainResult =
         withContext(Dispatchers.IO) {
 
+            // Deterministic device and screen commands must never be sent to a cloud
+            // model first. Execute these locally so wording variations cannot derail them.
+            val local = parseDeviceCommand(text) ?: parseAccessibilityCommand(text)
+            if (local != null) return@withContext local
+
             if (canUseCloud()) {
                 try {
                     return@withContext cloud(text, history)
@@ -83,6 +88,49 @@ class Brain(private val ctx: Context) {
             actions = plan.actions,
             online = false
         )
+    }
+
+    /**
+     * Handles common screen-control wording locally, before cloud interpretation.
+     */
+    private fun parseAccessibilityCommand(text: String): BrainResult? {
+        val command = text.lowercase(Locale.ROOT)
+            .replace(Regex("[,!?]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        if (command.isBlank()) return null
+
+        fun result(tool: String, args: JSONObject = JSONObject()) =
+            BrainResult("", listOf(tool to args), online = false)
+
+        if (Regex("""^(?:please )?(?:can you |could you )?(?:please )?(?:read|show|tell me|describe)(?: me)? (?:what(?:'s| is) )?(?:on )?(?:my |this |the )?screen(?: to me)?$""").matches(command) ||
+            command in setOf("read screen", "read my screen", "read this screen",
+                "what is on my screen", "what's on my screen", "what is this screen showing",
+                "what does my screen say", "what does this say", "describe this screen",
+                "look at my screen", "inspect my screen")) {
+            return result("read_screen")
+        }
+
+        if (command in setOf("go back", "press back", "back", "navigate back", "return to previous screen")) {
+            return result("press_back")
+        }
+
+        Regex("""^(?:please )?(?:scroll|swipe) (up|down)(?: on (?:my |the )?screen)?$""")
+            .find(command)?.let { return result("scroll_screen", JSONObject().put("direction", it.groupValues[1])) }
+
+        Regex("""^(?:please )?(?:tap|click|press) (?:on )?(.+)$""")
+            .find(command)?.let { return result("tap_screen", JSONObject().put("label", it.groupValues[1].trim())) }
+
+        Regex("""^(?:please )?(?:type|enter|write) (.+?)(?: on (?:my )?(?:keyboard|screen|text field|message box))?$""")
+            .find(command)?.let {
+                val value = it.groupValues[1].trim().trim('"', '\\'')
+                if (value.isNotBlank()) return result("type_text", JSONObject().put("text", value))
+            }
+
+        if (command in setOf("open accessibility settings", "accessibility settings", "enable accessibility")) {
+            return result("accessibility_settings")
+        }
+        return null
     }
 
     /**
