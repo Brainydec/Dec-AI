@@ -58,6 +58,12 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
             "volume" -> volume(a)
             "brightness" -> brightness(a.optInt("level", 50))
             "open_app" -> openApp(a.optString("name"))
+            "accessibility_settings" -> accessibilitySettings()
+            "scroll_screen" -> scrollScreen(a.optString("direction", "down"))
+            "read_screen" -> readScreen()
+            "press_back" -> pressBack()
+            "tap_screen" -> tapScreen(a.optString("label"))
+            "type_text" -> typeText(a.optString("text"))
             "set_alarm" -> alarm(a)
             "set_timer" -> timer(a)
             "remember" -> if (prefs.putMemory(a.optString("k"), a.optString("v"))) "" else "I don't store passwords or secrets."
@@ -103,6 +109,57 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
         Settings.System.putInt(ctx.contentResolver, Settings.System.SCREEN_BRIGHTNESS_MODE, Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL)
         Settings.System.putInt(ctx.contentResolver, Settings.System.SCREEN_BRIGHTNESS, level.coerceIn(0, 100) * 255 / 100)
         return ""
+    }
+
+    private fun accessibilitySettings(): String {
+        start(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        return "Android Accessibility settings are open. Find DEC AI and switch its service on."
+    }
+
+    private fun requireAccessibility(): Boolean =
+        AccessibilityControlService.isConnected()
+
+    private fun scrollScreen(direction: String): String {
+        if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
+        val normalized = if (direction.equals("up", true)) "up" else "down"
+        return if (AccessibilityControlService.scrollVisible(normalized)) {
+            "Scrolled $normalized."
+        } else {
+            "I couldn't scroll this screen. It may not contain a scrollable area."
+        }
+    }
+
+    private fun readScreen(): String {
+        if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
+        val visible = AccessibilityControlService.visibleText()
+        return visible.ifBlank { "I couldn't read any visible text on this screen." }
+    }
+
+    private fun pressBack(): String {
+        if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
+        return if (AccessibilityControlService.back()) "Went back." else "Android did not allow the Back action."
+    }
+
+    private suspend fun tapScreen(label: String): String {
+        if (label.isBlank()) return "Tell me which visible control to tap."
+        if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
+        if (!confirm("Tap '$label' on the current screen?")) return "Okay, I won't tap it."
+        return if (AccessibilityControlService.tapVisibleText(label)) {
+            "Tapped '$label'."
+        } else {
+            "I couldn't find a tappable control matching '$label'."
+        }
+    }
+
+    private suspend fun typeText(value: String): String {
+        if (value.isBlank()) return "Tell me what text to type."
+        if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
+        if (!confirm("Type this text into the currently focused field: $value")) return "Okay, I won't type it."
+        return if (AccessibilityControlService.typeIntoFocusedField(value)) {
+            "Typed the text into the focused field."
+        } else {
+            "I couldn't type there. Make sure a normal text field is focused; password fields are blocked."
+        }
     }
 
     private fun openApp(name: String): String {
