@@ -15,6 +15,12 @@ flashlight {"on": true|false}
 volume {"level": 0-100} OR {"direction": "up"|"down"}
 brightness {"level": 0-100}
 open_app {"name": "app name"}
+accessibility_settings {}
+scroll_screen {"direction": "up"|"down"}
+read_screen {}
+press_back {}
+tap_screen {"label": "visible control text"}
+type_text {"text": "text for focused field"}
 set_alarm {"hour": 0-23, "minute": 0-59, "message": "label"}
 set_timer {"seconds": integer, "message": "label"}
 call {"contact": "name or phone number"}
@@ -39,6 +45,11 @@ Rules:
 - Use "actions" only for the tools listed below. Never invent tools.
 - For phone calls, SMS and WhatsApp, request the action. The phone asks the user for approval.
 - Never invent phone numbers. Pass the contact name as spoken.
+- Screen navigation: use scroll_screen, read_screen and press_back for visible UI tasks.
+- Use tap_screen only for a clearly named visible control; the phone will ask the user before tapping.
+- Use type_text only when the user explicitly dictates the exact text; the phone will ask before typing.
+- Never use type_text for passwords, PINs, OTPs, payment details or other secrets.
+- If Accessibility is not enabled, first use accessibility_settings and explain that the user must enable DEC in Android Settings.
 - If information is missing, ask a short question and use no actions.
 - For news, current events, prices, scores, weather or changing information, set "search_query" to a useful web search question and leave actions empty.
 - Do not invent search results. The backend will perform the search.
@@ -120,6 +131,12 @@ KNOWN_TOOLS = {
     "volume",
     "brightness",
     "open_app",
+    "accessibility_settings",
+    "scroll_screen",
+    "read_screen",
+    "press_back",
+    "tap_screen",
+    "type_text",
     "set_alarm",
     "set_timer",
     "call",
