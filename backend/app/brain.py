@@ -10,21 +10,20 @@ from .schemas import Action, ChatRequest, ChatResponse
 
 log = logging.getLogger("dec.brain")
 
-# Tools the PHONE can execute. The phone enforces permissions and confirmations itself.
 TOOLS = """
 flashlight {"on": true|false}
 volume {"level": 0-100} OR {"direction": "up"|"down"}
 brightness {"level": 0-100}
-open_app {"name": "app name, e.g. chrome, camera, youtube. Use 'browser' for the web browser"}
+open_app {"name": "app name"}
 set_alarm {"hour": 0-23, "minute": 0-59, "message": "label"}
 set_timer {"seconds": integer, "message": "label"}
-call {"contact": "name exactly as the user said it, or a phone number"}
+call {"contact": "contact name or phone number"}
 answer_call {}
 reject_call {}
 send_sms {"to": "contact name or number", "body": "text"}
 read_sms {"count": 1-5}
 whatsapp {"to": "contact name or number", "body": "text"}
-remember {"k": "short key", "v": "value"} (only when the user asks you to remember something)
+remember {"k": "short key", "v": "value"}
 forget {"k": "key"}
 """
 
@@ -37,13 +36,13 @@ You reply ONLY with one JSON object, no markdown fences:
 
 Rules:
 - "reply" is spoken aloud: 1-3 short sentences, plain text, no markdown, no emoji.
-- Use "actions" only for the tools listed below. Never invent tools. Several actions are allowed in order.
-- When the user explicitly asks you to call someone, you MUST return an action using the call tool. Its args must contain a contact field set to the contact name exactly as spoken. Do not only say that you are calling.
-- For phone calls, SMS and WhatsApp you only REQUEST the action. The phone asks the user for approval, so say things like "Calling your brother." not "Done".
-- Never invent phone numbers. Pass the contact name as spoken.
-- If you need missing info (message text, who to call, what time), ask a short question and use no actions.
-- For news, current events, prices, scores, weather or anything that changes over time, set "search_query" to a good web search question and leave actions empty; the reply will be filled in from the search.
-- Reminders: use set_alarm (time of day) or set_timer (duration). An alarm can only ring within the next 24 hours; for later reminders say so. If the user gave no time, ask for one.
+- Use only the tools listed below. Never invent tools.
+- When the user explicitly asks you to call someone, return a call action. Its args must contain a contact field set to the contact name exactly as spoken.
+- For calls, SMS and WhatsApp, request the action. The phone asks for approval before execution.
+- Never invent phone numbers.
+- If you need missing information, ask a short question and use no actions.
+- For news, current events, prices, scores, weather or other changing information, set search_query to a good web search question and leave actions empty.
+- Reminders: use set_alarm for time of day or set_timer for duration. If no time is given, ask.
 - Current device info: {device}
 - Known facts about the user: {memories}
 
@@ -53,22 +52,30 @@ Phone tools:
 
 def _device_str(d) -> str:
     bits = []
+
     if d.time_iso:
         bits.append(f"local time {d.time_iso}")
+
     if d.timezone:
         bits.append(f"timezone {d.timezone}")
+
     if d.battery_percent is not None:
         bits.append(
             f"battery {d.battery_percent}%"
             + (" (charging)" if d.charging else "")
         )
+
     if d.network:
         bits.append(f"network {d.network}")
+
     return ", ".join(bits) or "unknown"
 
 
 def build_system(req: ChatRequest) -> str:
-    mem = "; ".join(f"{m.k}: {m.v}" for m in req.memories) or "none"
+    mem = "; ".join(
+        f"{m.k}: {m.v}" for m in req.memories
+    ) or "none"
+
     return SYSTEM.format(
         personality=req.personality,
         custom=req.custom_instructions or "none",
@@ -79,21 +86,30 @@ def build_system(req: ChatRequest) -> str:
 
 
 def parse_model_output(raw: str) -> dict:
-    """Tolerant JSON parsing; falls back to treating the text as the reply."""
     text = raw.strip()
-    text = re.sub(r"^```(?:json)?|```$", "", text, flags=re.MULTILINE).strip()
+    text = re.sub(
+        r"^```(?:json)?|```$",
+        "",
+        text,
+        flags=re.MULTILINE,
+    ).strip()
 
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
         match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+
         try:
             data = json.loads(match.group(0)) if match else None
         except json.JSONDecodeError:
             data = None
 
     if not isinstance(data, dict):
-        return {"reply": text[:500], "actions": [], "search_query": None}
+        return {
+            "reply": text[:500],
+            "actions": [],
+            "search_query": None,
+        }
 
     return data
 
@@ -140,9 +156,7 @@ def force_call_action(
     actions: list[Action],
     reply: str,
 ):
-    """Ensure explicit call requests produce a phone call action."""
-
-    # Do not initiate a call when the user refuses or cancels.
+    # Respect cancellations and refusals.
     if re.search(
         r"\b(?:don't|do not|never|cancel|stop)\s+(?:call|phone|dial)\b",
         text,
@@ -150,12 +164,9 @@ def force_call_action(
     ):
         return actions, reply
 
-    # Do not add a duplicate call action.
     if any(action.tool == "call" for action in actions):
         return actions, reply
 
-    # Recognise direct requests such as:
-    # "Call John", "Please call John", "Dial John now".
     match = re.search(
         r"\b(?:please\s+)?(?:call|phone|dial)\s+(.+?)"
         r"(?:\s+(?:right now|now|please|for me))?[?.!,]*$",
@@ -176,10 +187,7 @@ def force_call_action(
     contact = match.group(1).strip()
 
     if not contact or contact.lower() in {
-        "me",
-        "myself",
-        "someone",
-        "anyone",
+        "me", "myself", "someone", "anyone"
     }:
         return actions, reply
 
@@ -205,18 +213,18 @@ async def chat(req: ChatRequest) -> ChatResponse:
 
     messages = [
         {
-            "role": t.role if t.role in ("user", "assistant") else "user",
-            "content": t.content,
+            "role": item.role
+            if item.role in ("user", "assistant")
+            else "user",
+            "content": item.content,
         }
-        for t in req.history[-8:]
+        for item in req.history[-8:]
     ]
 
-    messages.append(
-        {
-            "role": "user",
-            "content": req.text,
-        }
-    )
+    messages.append({
+        "role": "user",
+        "content": req.text,
+    })
 
     last_err = None
 
@@ -230,7 +238,6 @@ async def chat(req: ChatRequest) -> ChatResponse:
             reply = str(data.get("reply") or "").strip()
             actions = clean_actions(data)
 
-            # Guarantee a call action for direct call requests.
             actions, reply = force_call_action(
                 req.text,
                 actions,
@@ -238,36 +245,46 @@ async def chat(req: ChatRequest) -> ChatResponse:
             )
 
             query = data.get("search_query")
-if query:
-    answer = None
 
-    searcher = (
-        p if p.name == "gemini"
-        else REGISTRY["gemini"]
-        if REGISTRY["gemini"].available()
-        else None
-    )
+            if query:
+                answer = None
 
-    if searcher:
-        try:
-            log.info("Starting Gemini web search: %s", query)
-            answer = await searcher.search_answer(str(query))
-            log.info("Gemini web search completed successfully")
+                searcher = (
+                    provider
+                    if provider.name == "gemini"
+                    else REGISTRY["gemini"]
+                    if REGISTRY["gemini"].available()
+                    else None
+                )
 
-        except Exception as e:
-            log.exception("GEMINI WEB SEARCH FAILED: %s", e)
+                if searcher:
+                    try:
+                        log.info("Starting Gemini web search: %s", query)
 
-    else:
-        log.error(
-            "WEB SEARCH UNAVAILABLE: GEMINI_API_KEY is missing or empty"
-        )
+                        answer = await searcher.search_answer(
+                            str(query)
+                        )
 
-    reply = (
-        answer
-        or "I couldn't reach the web search right now, so I can't check that."
-    )
-    actions = []
+                        log.info(
+                            "Gemini web search completed successfully"
+                        )
 
+                    except Exception as error:
+                        log.exception(
+                            "GEMINI WEB SEARCH FAILED: %s",
+                            error,
+                        )
+                else:
+                    log.error(
+                        "WEB SEARCH UNAVAILABLE: GEMINI_API_KEY is missing"
+                    )
+
+                reply = (
+                    answer
+                    or "I couldn't reach the web search right now, so I can't check that."
+                )
+
+                actions = []
 
             db.log(
                 req.session_id,
@@ -282,13 +299,12 @@ if query:
                 provider=provider.name,
             )
 
-        except (ProviderError, Exception) as error:
+        except Exception as error:
             last_err = error
 
-            log.error(
-                "provider %s failed: %s",
+            log.exception(
+                "Provider %s failed",
                 provider.name,
-                error,
             )
 
             db.log(
@@ -299,5 +315,7 @@ if query:
                 str(error),
             )
 
-    raise ProviderError(f"All providers failed: {last_err}")
-            
+    raise ProviderError(
+        f"All providers failed: {last_err}"
+    )
+    
