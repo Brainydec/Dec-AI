@@ -36,7 +36,9 @@ class Gemini(Provider):
         async with httpx.AsyncClient(timeout=TIMEOUT) as c:
             r = await c.post(self._url(), json=body, headers={"x-goog-api-key": settings.gemini_key})
         if r.status_code != 200:
-            raise ProviderError(f"gemini {r.status_code}: {r.text[:200]}")
+    raise ProviderError(
+        f"gemini {r.status_code}: {r.text[:1000]}"
+    )
         data = r.json()
         try:
             parts = data["candidates"][0]["content"]["parts"]
