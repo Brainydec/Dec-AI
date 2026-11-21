@@ -61,7 +61,7 @@ class AccessibilityControlService : AccessibilityService() {
     fun typeText(value: String): Boolean {
         val root = rootInActiveWindow ?: return false
         val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
-        if (!focused.isEditable || !focused.isEnabled) return false
+        if (!focused.isEditable || !focused.isEnabled || focused.isPassword) return false
         val args = Bundle().apply {
             putCharSequence(
                 AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
