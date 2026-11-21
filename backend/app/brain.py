@@ -238,29 +238,36 @@ async def chat(req: ChatRequest) -> ChatResponse:
             )
 
             query = data.get("search_query")
+if query:
+    answer = None
 
-            if query:
-                answer = None
+    searcher = (
+        p if p.name == "gemini"
+        else REGISTRY["gemini"]
+        if REGISTRY["gemini"].available()
+        else None
+    )
 
-                searcher = (
-                    provider
-                    if provider.name == "gemini"
-                    else REGISTRY["gemini"]
-                    if REGISTRY["gemini"].available()
-                    else None
-                )
+    if searcher:
+        try:
+            log.info("Starting Gemini web search: %s", query)
+            answer = await searcher.search_answer(str(query))
+            log.info("Gemini web search completed successfully")
 
-                if searcher:
-                    try:
-                        answer = await searcher.search_answer(str(query))
-                    except ProviderError as error:
-                        log.warning("search failed: %s", error)
+        except Exception as e:
+            log.exception("GEMINI WEB SEARCH FAILED: %s", e)
 
-                reply = (
-                    answer
-                    or "I couldn't reach the web search right now, so I can't check that."
-                )
-                actions = []
+    else:
+        log.error(
+            "WEB SEARCH UNAVAILABLE: GEMINI_API_KEY is missing or empty"
+        )
+
+    reply = (
+        answer
+        or "I couldn't reach the web search right now, so I can't check that."
+    )
+    actions = []
+
 
             db.log(
                 req.session_id,
