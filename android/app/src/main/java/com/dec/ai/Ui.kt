@@ -352,68 +352,271 @@ private fun MemoryScreen() {
 }
 
 // ------------------------------------------------------------------ SETTINGS
+
 @Composable
 private fun SettingsScreen() {
     val ctx = LocalContext.current
     val prefs = remember { Prefs.get(ctx) }
     val scope = rememberCoroutineScope()
+
     var url by remember { mutableStateOf(prefs.backendUrl) }
     var token by remember { mutableStateOf(prefs.apiToken) }
-    var pico by remember { mutableStateOf(prefs.picoKey) }
     var cc by remember { mutableStateOf(prefs.countryCode) }
     var persona by remember { mutableStateOf(prefs.personality) }
     var custom by remember { mutableStateOf(prefs.customInstructions) }
     var rate by remember { mutableFloatStateOf(prefs.ttsRate) }
     var offline by remember { mutableStateOf(prefs.forceOffline) }
     var status by remember { mutableStateOf("") }
-    var ppn by remember { mutableStateOf(File(ctx.filesDir, "hey_deck.ppn").exists()) }
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) runCatching {
-            ctx.contentResolver.openInputStream(uri)!!.use { i -> File(ctx.filesDir, "hey_deck.ppn").outputStream().use { o -> i.copyTo(o) } }
-            ppn = true; status = "Wake-word file imported. Stop and start DEC to apply."
-        }.onFailure { status = "Import failed: ${it.message}" }
+
+    var wakeModelReady by remember {
+        mutableStateOf(
+            runCatching {
+                ctx.assets.open("wake.onnx").use { }
+                ctx.assets.open("wake.json").use { }
+                true
+            }.getOrDefault(false)
+        )
     }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text("AI model & backend", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-        OutlinedTextField(url, { url = it; prefs.backendUrl = it }, label = { Text("Backend URL (https://…onrender.com)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(token, { token = it; prefs.apiToken = it }, label = { Text("Backend API token") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-        Button(onClick = {
-            status = "Contacting backend (can take ~60s if it was asleep)…"
-            scope.launch {
-                status = withContext(Dispatchers.IO) {
-                    try {
-                        val c = OkHttpClient.Builder().readTimeout(75, java.util.concurrent.TimeUnit.SECONDS).build()
-                        c.newCall(Request.Builder().url(prefs.backendUrl + "/health").build()).execute().use { r ->
-                            if (r.isSuccessful) "Backend OK: " + (r.body?.string() ?: "").take(120) else "Backend error ${r.code}"
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+
+        Text(
+            "AI model & backend",
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold
+        )
+
+        OutlinedTextField(
+            url,
+            {
+                url = it
+                prefs.backendUrl = it
+            },
+            label = {
+                Text("Backend URL (https://…onrender.com)")
+            },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        OutlinedTextField(
+            token,
+            {
+                token = it
+                prefs.apiToken = it
+            },
+            label = { Text("Backend API token") },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Button(
+            onClick = {
+                status =
+                    "Contacting backend (can take about 60 seconds if asleep)…"
+
+                scope.launch {
+                    status = withContext(Dispatchers.IO) {
+                        try {
+                            val c = OkHttpClient.Builder()
+                                .readTimeout(
+                                    75,
+                                    java.util.concurrent.TimeUnit.SECONDS
+                                )
+                                .build()
+
+                            c.newCall(
+                                Request.Builder()
+                                    .url(prefs.backendUrl.trimEnd('/') + "/health")
+                                    .build()
+                            ).execute().use { response ->
+                                if (response.isSuccessful) {
+                                    "Backend OK: " +
+                                        (response.body?.string() ?: "").take(120)
+                                } else {
+                                    "Backend error ${response.code}"
+                                }
+                            }
+                        } catch (e: Exception) {
+                            "Cannot reach backend: ${e.message}"
                         }
-                    } catch (e: Exception) { "Cannot reach backend: ${e.message}" }
+                    }
                 }
             }
-        }) { Text("Test backend connection") }
+        ) {
+            Text("Test backend connection")
+        }
+
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Force offline mode", Modifier.weight(1f)); Switch(offline, { offline = it; prefs.forceOffline = it })
+            Text(
+                "Force offline mode",
+                Modifier.weight(1f)
+            )
+
+            Switch(
+                offline,
+                {
+                    offline = it
+                    prefs.forceOffline = it
+                }
+            )
         }
 
-        Text("Wake word (\"Hey Deck\")", fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
-        OutlinedTextField(pico, { pico = it; prefs.picoKey = it }, label = { Text("Picovoice AccessKey") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(if (ppn) "✓ Hey Deck .ppn file installed" else "No .ppn file yet", Modifier.weight(1f), color = if (ppn) Green else Muted, fontSize = 13.sp)
-            Button(onClick = { picker.launch(arrayOf("*/*")) }) { Text("Import .ppn") }
+        Text(
+            "Offline wake word",
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(top = 8.dp)
+        )
+
+        Text(
+            "Wake phrase: Hey Deck",
+            fontSize = 14.sp
+        )
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                if (wakeModelReady) {
+                    "Heed ONNX model and configuration found"
+                } else {
+                    "Wake model files are missing"
+                },
+                Modifier.weight(1f),
+                color = if (wakeModelReady) Green else Muted,
+                fontSize = 13.sp
+            )
+
+            Button(
+                onClick = {
+                    wakeModelReady = runCatching {
+                        ctx.assets.open("wake.onnx").use { }
+                        ctx.assets.open("wake.json").use { }
+                        true
+                    }.getOrDefault(false)
+
+                    status = if (wakeModelReady) {
+                        "Both Heed files were found in app assets."
+                    } else {
+                        "Missing wake.onnx or wake.json in app assets."
+                    }
+                }
+            ) {
+                Text("Check")
+            }
         }
 
-        Text("Personality", fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
-        OutlinedTextField(persona, { persona = it; prefs.personality = it }, label = { Text("Style (e.g. calm, formal, witty)") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(custom, { custom = it; prefs.customInstructions = it }, label = { Text("Custom instructions") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(cc, { cc = it; prefs.countryCode = it }, label = { Text("Country code for WhatsApp (e.g. 91)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        Text("Speech speed: %.1fx".format(rate), fontSize = 13.sp)
-        Slider(rate, { rate = it; prefs.ttsRate = it }, valueRange = 0.6f..1.6f)
+        Text(
+            "The wake model runs offline. Only the phrase Hey Deck has been trained so far.",
+            fontSize = 12.sp,
+            color = Muted
+        )
 
-        Text("Allowed when offline", fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
-        Tool.values().filter { it != Tool.REMEMBER }.forEach { t ->
-            var on by remember { mutableStateOf(prefs.offlineAllowed(t)) }
-            Row(verticalAlignment = Alignment.CenterVertically) { Text(t.label, Modifier.weight(1f), fontSize = 14.sp); Switch(on, { on = it; prefs.setOfflineAllowed(t, it) }) }
+        Text(
+            "Personality",
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(top = 8.dp)
+        )
+
+        OutlinedTextField(
+            persona,
+            {
+                persona = it
+                prefs.personality = it
+            },
+            label = {
+                Text("Style (e.g. calm, formal, witty)")
+            },
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        OutlinedTextField(
+            custom,
+            {
+                custom = it
+                prefs.customInstructions = it
+            },
+            label = { Text("Custom instructions") },
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        OutlinedTextField(
+            cc,
+            {
+                cc = it
+                prefs.countryCode = it
+            },
+            label = {
+                Text("Country code for WhatsApp (e.g. 234)")
+            },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Text(
+            "Speech speed: %.1fx".format(rate),
+            fontSize = 13.sp
+        )
+
+        Slider(
+            rate,
+            {
+                rate = it
+                prefs.ttsRate = it
+            },
+            valueRange = 0.6f..1.6f
+        )
+
+        Text(
+            "Allowed when offline",
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(top = 8.dp)
+        )
+
+        Tool.values()
+            .filter { it != Tool.REMEMBER }
+            .forEach { tool ->
+                var enabled by remember {
+                    mutableStateOf(prefs.offlineAllowed(tool))
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        tool.label,
+                        Modifier.weight(1f),
+                        fontSize = 14.sp
+                    )
+
+                    Switch(
+                        enabled,
+                        {
+                            enabled = it
+                            prefs.setOfflineAllowed(tool, it)
+                        }
+                    )
+                }
+            }
+
+        if (status.isNotEmpty()) {
+            Text(
+                status,
+                color = Cyan,
+                fontSize = 13.sp
+            )
         }
-        if (status.isNotEmpty()) Text(status, color = Cyan, fontSize = 13.sp)
+
         Spacer(Modifier.height(24.dp))
     }
 }
