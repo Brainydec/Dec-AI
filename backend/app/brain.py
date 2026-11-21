@@ -32,7 +32,7 @@ Personality: {personality}
 User's custom instructions: {custom}
 
 You reply ONLY with one JSON object, no markdown fences:
-{{"reply": "<what to say aloud>", "actions": [{{"tool": "<name>", "args": {{...}}}}], "search_query": null}}
+{{"reply": "Hello!", "actions": [], "search_query": null}}
 
 Rules:
 - "reply" is spoken aloud: 1-3 short sentences, plain text, no markdown, no emoji.
