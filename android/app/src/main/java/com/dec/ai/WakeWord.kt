@@ -865,4 +865,125 @@ class WakeWord(
                         -0.9042459858119207,
                         0.9042459858119251
                     ),
+                    Section(
+                        1.0, -2.0, 1.0,
+                        -1.935283933705594,
+                        0.9367771186738887,
+                        0.0, 0.0
+                    ),
+                    Section(
+                        1.0, -2.0, 1.0,
+                        -1.9557989964479017,
+                        0.9573080099893462,
+                        0.0, 0.0
+                    ),
+                    Section(
+                        1.0, -2.0, 1.0,
+                        -1.9832678076605255,
+                        0.9847980149995752,
+                        0.0, 0.0
+                    )
+                )
+            ),
+
+            // 50 Hz notch filter.
+            Stage(
+                listOf(
+                    Section(
+                        0.9996728578106041,
+                        -1.9989603227048798,
+                        0.9996728578106046,
+                        -1.9989603227048796,
+                        0.9993457156212082,
+                        0.00032714218982763185,
+                        0.0003271421889648693
+                    )
+                )
+            ),
+
+            // 60 Hz notch filter.
+            Stage(
+                listOf(
+                    Section(
+                        0.9996074550501642,
+                        -1.9986599884535616,
+                        0.9996074550501639,
+                        -1.9986599884535616,
+                        0.999214910100328,
+                        0.0003925449500836464,
+                        0.0003925449495881815
+                    )
+                )
+            )
+        )
+
+        fun reset() {
+
+            for (stage in stages) {
+
+                stage.s1.fill(0.0)
+                stage.s2.fill(0.0)
+
+                stage.initialized = false
+            }
+        }
+
+        fun process(samples: DoubleArray) {
+
+            if (samples.isEmpty()) return
+
+            for (stage in stages) {
+
+                if (!stage.initialized) {
+
+                    val first = samples[0]
+
+                    for (s in stage.sections.indices) {
+
+                        val section = stage.sections[s]
+
+                        stage.s1[s] =
+                            section.zi1 * first
+
+                        stage.s2[s] =
+                            section.zi2 * first
+                    }
+
+                    stage.initialized = true
+                }
+
+                for (s in stage.sections.indices) {
+
+                    val section = stage.sections[s]
+
+                    var state1 = stage.s1[s]
+                    var state2 = stage.s2[s]
+
+                    for (i in samples.indices) {
+
+                        val x = samples[i]
+
+                        val y =
+                            section.b0 * x + state1
+
+                        state1 =
+                            section.b1 * x +
+                            state2 -
+                            section.a1 * y
+
+                        state2 =
+                            section.b2 * x -
+                            section.a2 * y
+
+                        samples[i] = y
+                    }
+
+                    stage.s1[s] = state1
+                    stage.s2[s] = state2
+                }
+            }
+        }
+    }
+}
+
                     
