@@ -1,3 +1,4 @@
+
 import json
 import logging
 import re
@@ -12,7 +13,7 @@ log = logging.getLogger("dec.brain")
 # Tools the PHONE can execute. The phone enforces permissions and confirmations itself.
 TOOLS = """
 flashlight {"on": true|false}
-volume {"level": 0-100}  OR  {"direction": "up"|"down"}
+volume {"level": 0-100} OR {"direction": "up"|"down"}
 brightness {"level": 0-100}
 open_app {"name": "app name, e.g. chrome, camera, youtube. Use 'browser' for the web browser"}
 set_alarm {"hour": 0-23, "minute": 0-59, "message": "label"}
@@ -23,7 +24,7 @@ reject_call {}
 send_sms {"to": "contact name or number", "body": "text"}
 read_sms {"count": 1-5}
 whatsapp {"to": "contact name or number", "body": "text"}
-remember {"k": "short key", "v": "value"}   (only when the user asks you to remember something)
+remember {"k": "short key", "v": "value"} (only when the user asks you to remember something)
 forget {"k": "key"}
 """
 
@@ -37,6 +38,7 @@ You reply ONLY with one JSON object, no markdown fences:
 Rules:
 - "reply" is spoken aloud: 1-3 short sentences, plain text, no markdown, no emoji.
 - Use "actions" only for the tools listed below. Never invent tools. Several actions are allowed in order.
+- When the user explicitly asks you to call someone, you MUST return a call action with {"tool": "call", "args": {"contact": "the contact name exactly as spoken"}}. Do not only say that you are calling.
 - For phone calls, SMS and WhatsApp you only REQUEST the action. The phone asks the user for approval, so say things like "Calling your brother." not "Done".
 - Never invent phone numbers. Pass the contact name as spoken.
 - If you need missing info (message text, who to call, what time), ask a short question and use no actions.
@@ -56,7 +58,10 @@ def _device_str(d) -> str:
     if d.timezone:
         bits.append(f"timezone {d.timezone}")
     if d.battery_percent is not None:
-        bits.append(f"battery {d.battery_percent}%" + (" (charging)" if d.charging else ""))
+        bits.append(
+            f"battery {d.battery_percent}%"
+            + (" (charging)" if d.charging else "")
+        )
     if d.network:
         bits.append(f"network {d.network}")
     return ", ".join(bits) or "unknown"
@@ -77,64 +82,215 @@ def parse_model_output(raw: str) -> dict:
     """Tolerant JSON parsing; falls back to treating the text as the reply."""
     text = raw.strip()
     text = re.sub(r"^```(?:json)?|```$", "", text, flags=re.MULTILINE).strip()
+
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
-        m = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
         try:
-            data = json.loads(m.group(0)) if m else None
+            data = json.loads(match.group(0)) if match else None
         except json.JSONDecodeError:
             data = None
+
     if not isinstance(data, dict):
         return {"reply": text[:500], "actions": [], "search_query": None}
+
     return data
 
 
 KNOWN_TOOLS = {
-    "flashlight", "volume", "brightness", "open_app", "set_alarm", "set_timer", "call",
-    "answer_call", "reject_call", "send_sms", "read_sms", "whatsapp", "remember", "forget",
+    "flashlight",
+    "volume",
+    "brightness",
+    "open_app",
+    "set_alarm",
+    "set_timer",
+    "call",
+    "answer_call",
+    "reject_call",
+    "send_sms",
+    "read_sms",
+    "whatsapp",
+    "remember",
+    "forget",
 }
 
 
 def clean_actions(data: dict) -> list[Action]:
     out = []
-    for a in data.get("actions") or []:
-        if isinstance(a, dict) and a.get("tool") in KNOWN_TOOLS and isinstance(a.get("args", {}), dict):
-            out.append(Action(tool=a["tool"], args=a.get("args", {})))
+
+    for action in data.get("actions") or []:
+        if (
+            isinstance(action, dict)
+            and action.get("tool") in KNOWN_TOOLS
+            and isinstance(action.get("args", {}), dict)
+        ):
+            out.append(
+                Action(
+                    tool=action["tool"],
+                    args=action.get("args", {}),
+                )
+            )
+
     return out[:6]
+
+
+def force_call_action(
+    text: str,
+    actions: list[Action],
+    reply: str,
+):
+    """Ensure explicit call requests produce a phone call action."""
+
+    # Do not initiate a call when the user refuses or cancels.
+    if re.search(
+        r"\b(?:don't|do not|never|cancel|stop)\s+(?:call|phone|dial)\b",
+        text,
+        re.I,
+    ):
+        return actions, reply
+
+    # Do not add a duplicate call action.
+    if any(action.tool == "call" for action in actions):
+        return actions, reply
+
+    # Recognise direct requests such as:
+    # "Call John", "Please call John", "Dial John now".
+    match = re.search(
+        r"\b(?:please\s+)?(?:call|phone|dial)\s+(.+?)"
+        r"(?:\s+(?:right now|now|please|for me))?[?.!,]*$",
+        text.strip(),
+        re.I,
+    )
+
+    if not match:
+        match = re.search(
+            r"\b(?:make|place)\s+(?:a\s+)?call\s+to\s+(.+?)[?.!,]*$",
+            text.strip(),
+            re.I,
+        )
+
+    if not match:
+        return actions, reply
+
+    contact = match.group(1).strip()
+
+    if not contact or contact.lower() in {
+        "me",
+        "myself",
+        "someone",
+        "anyone",
+    }:
+        return actions, reply
+
+    actions.append(
+        Action(
+            tool="call",
+            args={"contact": contact},
+        )
+    )
+
+    return actions, f"Calling {contact}."
 
 
 async def chat(req: ChatRequest) -> ChatResponse:
     providers = chain()
+
     if not providers:
-        raise ProviderError("No AI provider configured. Set GEMINI_API_KEY and/or GROQ_API_KEY.")
+        raise ProviderError(
+            "No AI provider configured. Set GEMINI_API_KEY and/or GROQ_API_KEY."
+        )
+
     system = build_system(req)
-    messages = [{"role": t.role if t.role in ("user", "assistant") else "user", "content": t.content} for t in req.history[-8:]]
-    messages.append({"role": "user", "content": req.text})
+
+    messages = [
+        {
+            "role": t.role if t.role in ("user", "assistant") else "user",
+            "content": t.content,
+        }
+        for t in req.history[-8:]
+    ]
+
+    messages.append(
+        {
+            "role": "user",
+            "content": req.text,
+        }
+    )
 
     last_err = None
-    for p in providers:
-        t0 = time.time()
+
+    for provider in providers:
+        start_time = time.time()
+
         try:
-            raw = await p.complete_json(system, messages)
+            raw = await provider.complete_json(system, messages)
             data = parse_model_output(raw)
+
             reply = str(data.get("reply") or "").strip()
             actions = clean_actions(data)
+
+            # Guarantee a call action for direct call requests.
+            actions, reply = force_call_action(
+                req.text,
+                actions,
+                reply,
+            )
+
             query = data.get("search_query")
+
             if query:
                 answer = None
-                searcher = p if p.name == "gemini" else REGISTRY["gemini"] if REGISTRY["gemini"].available() else None
+
+                searcher = (
+                    provider
+                    if provider.name == "gemini"
+                    else REGISTRY["gemini"]
+                    if REGISTRY["gemini"].available()
+                    else None
+                )
+
                 if searcher:
                     try:
                         answer = await searcher.search_answer(str(query))
-                    except ProviderError as e:
-                        log.warning("search failed: %s", e)
-                reply = answer or "I couldn't reach the web search right now, so I can't check that."
+                    except ProviderError as error:
+                        log.warning("search failed: %s", error)
+
+                reply = (
+                    answer
+                    or "I couldn't reach the web search right now, so I can't check that."
+                )
                 actions = []
-            db.log(req.session_id, p.name, int((time.time() - t0) * 1000), True)
-            return ChatResponse(reply=reply or "Okay.", actions=actions, provider=p.name)
-        except (ProviderError, Exception) as e:  # noqa: BLE001 - try next provider
-            last_err = e
-            log.error("provider %s failed: %s", p.name, e)
-            db.log(req.session_id, p.name, int((time.time() - t0) * 1000), False, str(e))
+
+            db.log(
+                req.session_id,
+                provider.name,
+                int((time.time() - start_time) * 1000),
+                True,
+            )
+
+            return ChatResponse(
+                reply=reply or "Okay.",
+                actions=actions,
+                provider=provider.name,
+            )
+
+        except (ProviderError, Exception) as error:
+            last_err = error
+
+            log.error(
+                "provider %s failed: %s",
+                provider.name,
+                error,
+            )
+
+            db.log(
+                req.session_id,
+                provider.name,
+                int((time.time() - start_time) * 1000),
+                False,
+                str(error),
+            )
+
     raise ProviderError(f"All providers failed: {last_err}")
+            
