@@ -62,6 +62,9 @@ class AccessibilityControlService : AccessibilityService() {
         val root = rootInActiveWindow ?: return false
         val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
         if (!focused.isEditable || !focused.isEnabled || focused.isPassword) return false
+        val sensitiveHint = focused.hintText?.toString().orEmpty() + " " +
+            focused.viewIdResourceName.orEmpty()
+        if (Regex("(?i)password|passcode|pin|otp|one.?time.?code|cvv|security.?code").containsMatchIn(sensitiveHint)) return false
         val args = Bundle().apply {
             putCharSequence(
                 AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
