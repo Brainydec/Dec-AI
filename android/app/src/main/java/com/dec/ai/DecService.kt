@@ -28,7 +28,9 @@ class DecService : Service() {
     private lateinit var wake: WakeWord
 
     private var job: Job? = null
-    @Volatile private var stopping = false
+
+    @Volatile
+    private var stopping = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -47,9 +49,10 @@ class DecService : Service() {
             scope.launch {
                 if (
                     !stopping &&
-                    Dec.state.value == DecState.STANDBY &&
-                    !prefs.emergencyStop
+                    !prefs.emergencyStop &&
+                    Dec.state.value == DecState.STANDBY
                 ) {
+                    Dec.notice.value = "DEC activated!"
                     startConversation()
                 }
             }
@@ -93,8 +96,7 @@ class DecService : Service() {
 
         when (intent?.action) {
 
-            ACTION_STOP,
-            ACTION_ESTOP -> {
+            ACTION_STOP, ACTION_ESTOP -> {
                 stopping = true
                 job?.cancel()
                 wake.stop()
@@ -113,6 +115,7 @@ class DecService : Service() {
             )
 
             else -> {
+                stopping = false
                 if (
                     Dec.state.value == DecState.OFF ||
                     job?.isActive != true
@@ -152,12 +155,12 @@ class DecService : Service() {
 
         return NotificationCompat.Builder(this, "dec")
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setContentTitle("DEC is on")
+            .setContentTitle("DEC AI is running")
             .setContentText(
                 if (wake.configured()) {
-                    "Say \"Hey Deck\" or tap Talk"
+                    "Say Hey DEC or tap Talk"
                 } else {
-                    "Tap Talk to speak"
+                    "Tap Talk to speak. Wake model unavailable."
                 }
             )
             .setContentIntent(open)
@@ -185,7 +188,7 @@ class DecService : Service() {
         val error = if (wake.configured()) {
             wake.start()
         } else {
-            "Wake model missing. Tap the orb to talk."
+            "Wake model missing. Tap Talk to speak."
         }
 
         Dec.wakeActive.value = error == null
@@ -193,7 +196,7 @@ class DecService : Service() {
         if (error != null) {
             Dec.notice.value = error
         } else {
-            Dec.notice.value = "Listening for Hey Deck"
+            Dec.notice.value = "DEC is ready. Say Hey DEC."
         }
 
         Dec.state.value = DecState.STANDBY
@@ -223,7 +226,7 @@ class DecService : Service() {
 
         if (stopping || prefs.emergencyStop) return
 
-        job?.cancel()
+        if (job?.isActive == true) return
 
         job = scope.launch {
             conversation()
@@ -253,10 +256,14 @@ class DecService : Service() {
             ) {
 
                 Dec.state.value = DecState.LISTENING
+                Dec.notice.value = "DEC is listening..."
 
-                val said = speech.listen(!online()) ?: break
+                val said = speech.listen(!online())
 
-                if (said.isBlank()) break
+                if (said == null || said.isBlank()) {
+                    Dec.notice.value = "No speech detected. Returning to standby."
+                    break
+                }
 
                 if (
                     Regex(
@@ -270,6 +277,11 @@ class DecService : Service() {
                 handle(said)
             }
 
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Dec.notice.value =
+                "DEC error: ${e.message ?: "Unknown error"}"
         } finally {
             withContext(NonCancellable) {
                 goStandby()
@@ -281,6 +293,7 @@ class DecService : Service() {
 
         Dec.addMessage(Msg(true, said))
         Dec.state.value = DecState.THINKING
+        Dec.notice.value = "DEC is thinking..."
 
         val response = brain.ask(
             said,
