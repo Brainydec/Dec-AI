@@ -370,6 +370,33 @@ object OfflineParser {
             )
         }
 
+        // ---------------- ACCESSIBILITY / SCREEN CONTROLS ----------------
+
+        if (t in setOf("open accessibility settings", "enable accessibility", "accessibility settings")) {
+            return Plan("Opening Android Accessibility settings. Find DEC AI and enable its service.", listOf(a("accessibility_settings")))
+        }
+
+        if (t in setOf("read screen", "read this screen", "what is on my screen", "describe this screen")) {
+            return Plan("", listOf(a("read_screen")))
+        }
+
+        if (t in setOf("go back", "press back", "back")) {
+            return Plan("", listOf(a("press_back")))
+        }
+
+        if (Regex("""^(?:scroll|swipe) (up|down)(?: on (?:the )?screen)?$""").matches(t)) {
+            val direction = Regex("""^(?:scroll|swipe) (up|down)""").find(t)!!.groupValues[1]
+            return Plan("", listOf(a("scroll_screen", "direction" to direction)))
+        }
+
+        Regex("""^(?:tap|click) (?:on )?(.+)$""").find(t)?.let {
+            return Plan("", listOf(a("tap_screen", "label" to it.groupValues[1])))
+        }
+
+        Regex("""^(?:type|enter|write) (.+)$""").find(t)?.let {
+            return Plan("", listOf(a("type_text", "text" to it.groupValues[1])))
+        }
+
         // ---------------- BATTERY ----------------
 
         if (Regex("""\bbattery\b""").containsMatchIn(t)) {
