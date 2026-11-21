@@ -376,25 +376,27 @@ object OfflineParser {
             return Plan("Opening Android Accessibility settings. Find DEC AI and enable its service.", listOf(a("accessibility_settings")))
         }
 
-        if (t in setOf("read screen", "read this screen", "what is on my screen", "describe this screen")) {
+        if (t in setOf("read screen", "read my screen", "read this screen", "what is on my screen",
+                "what's on my screen", "what does this say", "what does my screen say",
+                "describe this screen", "look at my screen", "inspect my screen")) {
             return Plan("", listOf(a("read_screen")))
         }
 
-        if (t in setOf("go back", "press back", "back")) {
+        if (t in setOf("go back", "press back", "back", "navigate back", "return to previous screen")) {
             return Plan("", listOf(a("press_back")))
         }
 
-        if (Regex("""^(?:scroll|swipe) (up|down)(?: on (?:the )?screen)?$""").matches(t)) {
-            val direction = Regex("""^(?:scroll|swipe) (up|down)""").find(t)!!.groupValues[1]
-            return Plan("", listOf(a("scroll_screen", "direction" to direction)))
+        Regex("""^(?:please )?(?:scroll|swipe) (up|down)(?: on (?:my |the )?screen)?$""").find(t)?.let {
+            return Plan("", listOf(a("scroll_screen", "direction" to it.groupValues[1])))
         }
 
-        Regex("""^(?:tap|click) (?:on )?(.+)$""").find(t)?.let {
+        Regex("""^(?:please )?(?:tap|click|press) (?:on )?(.+)$""").find(t)?.let {
             return Plan("", listOf(a("tap_screen", "label" to it.groupValues[1])))
         }
 
-        Regex("""^(?:type|enter|write) (.+)$""").find(t)?.let {
-            return Plan("", listOf(a("type_text", "text" to it.groupValues[1])))
+        Regex("""^(?:please )?(?:type|enter|write) (.+?)(?: on (?:my )?(?:keyboard|screen|text field|message box))?$""").find(t)?.let {
+            val value = it.groupValues[1].trim().trim('"', '\\'')
+            if (value.isNotBlank()) return Plan("", listOf(a("type_text", "text" to value)))
         }
 
         // ---------------- BATTERY ----------------
