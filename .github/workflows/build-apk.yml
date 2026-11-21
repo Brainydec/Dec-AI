@@ -1,6 +1,9 @@
 name: Build DEC APK
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - feature/smart-phone-control
 permissions:
   contents: write
 jobs:
