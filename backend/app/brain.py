@@ -1,29 +1,29 @@
+
 import json
 import logging
 import re
 import time
 
 from . import db
-from .providers import ProviderError, chain, REGISTRY
+from .providers import ProviderError, chain, web_search
 from .schemas import Action, ChatRequest, ChatResponse
 
 log = logging.getLogger("dec.brain")
 
-# Tools the PHONE can execute. The phone enforces permissions and confirmations itself.
 TOOLS = """
 flashlight {"on": true|false}
-volume {"level": 0-100}  OR  {"direction": "up"|"down"}
+volume {"level": 0-100} OR {"direction": "up"|"down"}
 brightness {"level": 0-100}
-open_app {"name": "app name, e.g. chrome, camera, youtube. Use 'browser' for the web browser"}
+open_app {"name": "app name"}
 set_alarm {"hour": 0-23, "minute": 0-59, "message": "label"}
 set_timer {"seconds": integer, "message": "label"}
-call {"contact": "name exactly as the user said it, or a phone number"}
+call {"contact": "name or phone number"}
 answer_call {}
 reject_call {}
 send_sms {"to": "contact name or number", "body": "text"}
 read_sms {"count": 1-5}
 whatsapp {"to": "contact name or number", "body": "text"}
-remember {"k": "short key", "v": "value"}   (only when the user asks you to remember something)
+remember {"k": "short key", "v": "value"}
 forget {"k": "key"}
 """
 
@@ -36,12 +36,14 @@ You reply ONLY with one JSON object, no markdown fences:
 
 Rules:
 - "reply" is spoken aloud: 1-3 short sentences, plain text, no markdown, no emoji.
-- Use "actions" only for the tools listed below. Never invent tools. Several actions are allowed in order.
-- For phone calls, SMS and WhatsApp you only REQUEST the action. The phone asks the user for approval, so say things like "Calling your brother." not "Done".
+- Use "actions" only for the tools listed below. Never invent tools.
+- For phone calls, SMS and WhatsApp, request the action. The phone asks the user for approval.
 - Never invent phone numbers. Pass the contact name as spoken.
-- If you need missing info (message text, who to call, what time), ask a short question and use no actions.
-- For news, current events, prices, scores, weather or anything that changes over time, set "search_query" to a good web search question and leave actions empty; the reply will be filled in from the search.
-- Reminders: use set_alarm (time of day) or set_timer (duration). An alarm can only ring within the next 24 hours; for later reminders say so. If the user gave no time, ask for one.
+- If information is missing, ask a short question and use no actions.
+- For news, current events, prices, scores, weather or changing information, set "search_query" to a useful web search question and leave actions empty.
+- Do not invent search results. The backend will perform the search.
+- Reminders: use set_alarm for a time of day or set_timer for a duration.
+- An alarm can only ring within the next 24 hours. Ask for a time if none is provided.
 - Current device info: {device}
 - Known facts about the user: {memories}
 
@@ -49,92 +51,189 @@ Phone tools:
 {tools}"""
 
 
-def _device_str(d) -> str:
+def _device_str(device) -> str:
     bits = []
-    if d.time_iso:
-        bits.append(f"local time {d.time_iso}")
-    if d.timezone:
-        bits.append(f"timezone {d.timezone}")
-    if d.battery_percent is not None:
-        bits.append(f"battery {d.battery_percent}%" + (" (charging)" if d.charging else ""))
-    if d.network:
-        bits.append(f"network {d.network}")
+
+    if device.time_iso:
+        bits.append(f"local time {device.time_iso}")
+
+    if device.timezone:
+        bits.append(f"timezone {device.timezone}")
+
+    if device.battery_percent is not None:
+        charging = " (charging)" if device.charging else ""
+        bits.append(f"battery {device.battery_percent}%{charging}")
+
+    if device.network:
+        bits.append(f"network {device.network}")
+
     return ", ".join(bits) or "unknown"
 
 
 def build_system(req: ChatRequest) -> str:
-    mem = "; ".join(f"{m.k}: {m.v}" for m in req.memories) or "none"
+    memories = "; ".join(
+        f"{memory.k}: {memory.v}" for memory in req.memories
+    ) or "none"
+
     return SYSTEM.format(
         personality=req.personality,
         custom=req.custom_instructions or "none",
         device=_device_str(req.device),
-        memories=mem,
+        memories=memories,
         tools=TOOLS,
     )
 
 
 def parse_model_output(raw: str) -> dict:
-    """Tolerant JSON parsing; falls back to treating the text as the reply."""
+    """Parse model JSON, with a fallback for imperfect model responses."""
+
     text = raw.strip()
-    text = re.sub(r"^```(?:json)?|```$", "", text, flags=re.MULTILINE).strip()
+    text = re.sub(
+        r"^```(?:json)?|```$",
+        "",
+        text,
+        flags=re.MULTILINE,
+    ).strip()
+
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
-        m = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+
         try:
-            data = json.loads(m.group(0)) if m else None
+            data = json.loads(match.group(0)) if match else None
         except json.JSONDecodeError:
             data = None
+
     if not isinstance(data, dict):
-        return {"reply": text[:500], "actions": [], "search_query": None}
+        return {
+            "reply": text[:500],
+            "actions": [],
+            "search_query": None,
+        }
+
     return data
 
 
 KNOWN_TOOLS = {
-    "flashlight", "volume", "brightness", "open_app", "set_alarm", "set_timer", "call",
-    "answer_call", "reject_call", "send_sms", "read_sms", "whatsapp", "remember", "forget",
+    "flashlight",
+    "volume",
+    "brightness",
+    "open_app",
+    "set_alarm",
+    "set_timer",
+    "call",
+    "answer_call",
+    "reject_call",
+    "send_sms",
+    "read_sms",
+    "whatsapp",
+    "remember",
+    "forget",
 }
 
 
 def clean_actions(data: dict) -> list[Action]:
-    out = []
-    for a in data.get("actions") or []:
-        if isinstance(a, dict) and a.get("tool") in KNOWN_TOOLS and isinstance(a.get("args", {}), dict):
-            out.append(Action(tool=a["tool"], args=a.get("args", {})))
-    return out[:6]
+    actions = []
+
+    for action in data.get("actions") or []:
+        if (
+            isinstance(action, dict)
+            and action.get("tool") in KNOWN_TOOLS
+            and isinstance(action.get("args", {}), dict)
+        ):
+            actions.append(
+                Action(
+                    tool=action["tool"],
+                    args=action.get("args", {}),
+                )
+            )
+
+    return actions[:6]
 
 
 async def chat(req: ChatRequest) -> ChatResponse:
     providers = chain()
-    if not providers:
-        raise ProviderError("No AI provider configured. Set GEMINI_API_KEY and/or GROQ_API_KEY.")
-    system = build_system(req)
-    messages = [{"role": t.role if t.role in ("user", "assistant") else "user", "content": t.content} for t in req.history[-8:]]
-    messages.append({"role": "user", "content": req.text})
 
-    last_err = None
-    for p in providers:
-        t0 = time.time()
+    if not providers:
+        raise ProviderError(
+            "No AI provider configured. Set GROQ_API_KEY or GEMINI_API_KEY."
+        )
+
+    system = build_system(req)
+
+    messages = [
+        {
+            "role": item.role
+            if item.role in ("user", "assistant")
+            else "user",
+            "content": item.content,
+        }
+        for item in req.history[-8:]
+    ]
+
+    messages.append({
+        "role": "user",
+        "content": req.text,
+    })
+
+    last_error = None
+
+    for provider in providers:
+        started = time.time()
+
         try:
-            raw = await p.complete_json(system, messages)
+            raw = await provider.complete_json(system, messages)
             data = parse_model_output(raw)
+
             reply = str(data.get("reply") or "").strip()
             actions = clean_actions(data)
             query = data.get("search_query")
+
             if query:
-                answer = None
-                searcher = p if p.name == "gemini" else REGISTRY["gemini"] if REGISTRY["gemini"].available() else None
-                if searcher:
-                    try:
-                        answer = await searcher.search_answer(str(query))
-                    except ProviderError as e:
-                        log.warning("search failed: %s", e)
-                reply = answer or "I couldn't reach the web search right now, so I can't check that."
+                try:
+                    reply = await web_search(str(query))
+                except ProviderError as error:
+                    log.error("Web search failed: %s", error)
+                    reply = (
+                        "I couldn't access live web search right now. "
+                        "Please try again later."
+                    )
+
                 actions = []
-            db.log(req.session_id, p.name, int((time.time() - t0) * 1000), True)
-            return ChatResponse(reply=reply or "Okay.", actions=actions, provider=p.name)
-        except (ProviderError, Exception) as e:  # noqa: BLE001 - try next provider
-            last_err = e
-            log.error("provider %s failed: %s", p.name, e)
-            db.log(req.session_id, p.name, int((time.time() - t0) * 1000), False, str(e))
-    raise ProviderError(f"All providers failed: {last_err}")
+
+            elapsed = int((time.time() - started) * 1000)
+
+            db.log(
+                req.session_id,
+                provider.name,
+                elapsed,
+                True,
+            )
+
+            return ChatResponse(
+                reply=reply or "Okay.",
+                actions=actions,
+                provider=provider.name,
+            )
+
+        except Exception as error:
+            last_error = error
+
+            elapsed = int((time.time() - started) * 1000)
+
+            log.exception(
+                "Provider %s failed",
+                provider.name,
+            )
+
+            db.log(
+                req.session_id,
+                provider.name,
+                elapsed,
+                False,
+                str(error),
+            )
+
+    raise ProviderError(f"All providers failed: {last_error}")
+            
