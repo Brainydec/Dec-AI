@@ -75,7 +75,12 @@ class Groq(Provider):
     async def complete_json(self, system, messages):
         body = {
             "model": settings.groq_model,
-            "messages": [{"role": "system", "content": system}] + messages,
+            "messages": [
+    {
+        "role": "system",
+        "content": system + "\n\nIMPORTANT: Return valid JSON only. Do not include Markdown, code fences, or explanations outside the JSON."
+    }
+] + messages,
             "response_format": {"type": "json_object"},
             "temperature": 0.4,
         }
