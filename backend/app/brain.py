@@ -38,7 +38,7 @@ You reply ONLY with one JSON object, no markdown fences:
 Rules:
 - "reply" is spoken aloud: 1-3 short sentences, plain text, no markdown, no emoji.
 - Use "actions" only for the tools listed below. Never invent tools. Several actions are allowed in order.
-- When the user explicitly asks you to call someone, you MUST return a call action with {"tool": "call", "args": {"contact": "the contact name exactly as spoken"}}. Do not only say that you are calling.
+- When the user explicitly asks you to call someone, you MUST return a call action with {{"tool": "call", "args": {"contact": "the contact name exactly as spoken"}}}. Do not only say that you are calling.
 - For phone calls, SMS and WhatsApp you only REQUEST the action. The phone asks the user for approval, so say things like "Calling your brother." not "Done".
 - Never invent phone numbers. Pass the contact name as spoken.
 - If you need missing info (message text, who to call, what time), ask a short question and use no actions.
