@@ -1,19 +1,60 @@
+
 name: Unpack project
+
 on:
   workflow_dispatch:
+
 permissions:
   contents: write
+
 jobs:
   unpack:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - name: Unzip dec-ai.zip into the repo and commit
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check ZIP file
         run: |
-          unzip -o dec-ai.zip
-          rm dec-ai.zip
+          echo "Checking repository files..."
+          ls -lah
+
+          if [ ! -f "dec-ai.zip" ]; then
+            echo "ERROR: dec-ai.zip was not found in the repository root."
+            echo "Available ZIP files:"
+            find . -maxdepth 2 -type f -iname "*.zip"
+            exit 1
+          fi
+
+      - name: Validate ZIP file
+        run: |
+          unzip -t dec-ai.zip
+
+      - name: Extract DEC AI project
+        run: |
+          mkdir -p extracted
+          unzip -o dec-ai.zip -d extracted
+          echo "Extraction completed."
+          find extracted -maxdepth 3 -type f | head -100
+
+      - name: Copy project files into repository
+        run: |
+          cp -a extracted/. .
+          rm -rf extracted
+          rm -f dec-ai.zip
+
+      - name: Commit project files
+        run: |
           git config user.name "github-actions"
           git config user.email "actions@users.noreply.github.com"
+
           git add -A
-          git commit -m "Add DEC AI project"
-          git push
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Add DEC AI project"
+            git push
+          fi
+          
