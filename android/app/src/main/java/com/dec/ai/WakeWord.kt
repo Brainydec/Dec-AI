@@ -12,6 +12,7 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import java.nio.FloatBuffer
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.exp
@@ -23,12 +24,19 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * Heed ONNX offline wake-word detector.
+ * DEC offline ONNX wake-word detector.
  *
  * Model: assets/wake.onnx
  * Metadata: assets/wake.json
- * Input: [1, 40, 101]
- * Output: logit converted to probability using sigmoid.
+ *
+ * ONNX input: mel [1, 40, 101]
+ * ONNX output: logit [batch]
+ *
+ * Preprocessing:
+ * High-pass + mains notch
+ * Peak normalization to -3 dBFS
+ * Log-mel
+ * Cepstral mean normalization
  */
 class WakeWord(
     private val context: Context,
@@ -41,7 +49,10 @@ class WakeWord(
         private const val FFT = 512
         private const val HOP = 160
         private const val MEL = 40
+
+        // Must match the exported ONNX model.
         private const val FRAMES = 101
+
         private const val CHUNK = 1600
 
         private const val THRESHOLD = 0.653
@@ -49,6 +60,8 @@ class WakeWord(
         private const val BAND_THRESHOLD = 0.15
         private const val CONSECUTIVE = 2
         private const val REFRACTORY_MS = 700L
+
+        private const val TARGET_PEAK = 0.707
     }
 
     private val lock = Any()
@@ -56,8 +69,11 @@ class WakeWord(
     @Volatile
     private var running = false
 
+    private val wakeCallbackActive = AtomicBoolean(false)
+
     private var worker: Thread? = null
     private var recorder: AudioRecord? = null
+
     private var environment: OrtEnvironment? = null
     private var session: OrtSession? = null
 
@@ -77,11 +93,13 @@ class WakeWord(
     }
 
     fun start(): String? {
+
         synchronized(lock) {
+
             if (running) return null
 
             if (!configured()) {
-                return "Heed wake model missing from app assets."
+                return "DEC wake model missing from app assets."
             }
 
             if (
@@ -90,25 +108,35 @@ class WakeWord(
                     Manifest.permission.RECORD_AUDIO
                 ) != PackageManager.PERMISSION_GRANTED
             ) {
-                return "Microphone permission is required for wake detection."
+                return "Microphone permission is required."
             }
 
             var newSession: OrtSession? = null
             var audio: AudioRecord? = null
 
             try {
+
                 val env = OrtEnvironment.getEnvironment()
 
-                val modelBytes = context.assets
-                    .open("wake.onnx")
-                    .use { it.readBytes() }
+                // Reuse the existing ONNX session when available.
+                if (session == null) {
 
-                val options = OrtSession.SessionOptions()
+                    val modelBytes = context.assets
+                        .open("wake.onnx")
+                        .use { it.readBytes() }
 
-                try {
-                    newSession = env.createSession(modelBytes, options)
-                } finally {
-                    runCatching { options.close() }
+                    val options = OrtSession.SessionOptions()
+
+                    try {
+                        newSession = env.createSession(
+                            modelBytes,
+                            options
+                        )
+                    } finally {
+                        runCatching { options.close() }
+                    }
+
+                    session = newSession
                 }
 
                 val minBuffer = AudioRecord.getMinBufferSize(
@@ -118,8 +146,7 @@ class WakeWord(
                 )
 
                 if (minBuffer <= 0) {
-                    newSession.close()
-                    return "This phone does not support the required microphone format."
+                    return "Unsupported microphone audio format."
                 }
 
                 audio = AudioRecord(
@@ -132,22 +159,27 @@ class WakeWord(
 
                 if (audio.state != AudioRecord.STATE_INITIALIZED) {
                     audio.release()
-                    newSession.close()
-                    return "Could not initialize the microphone."
+                    return "Could not initialize DEC microphone."
                 }
 
                 environment = env
-                session = newSession
                 recorder = audio
 
                 preprocessor.reset()
                 aboveCount = 0
                 lastTrigger = 0L
 
+                wakeCallbackActive.set(false)
+
                 audio.startRecording()
 
-                if (audio.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-                    throw IllegalStateException("Microphone did not start recording.")
+                if (
+                    audio.recordingState !=
+                    AudioRecord.RECORDSTATE_RECORDING
+                ) {
+                    throw IllegalStateException(
+                        "Microphone did not start recording."
+                    )
                 }
 
                 running = true
@@ -155,7 +187,7 @@ class WakeWord(
                 worker = Thread {
                     listenLoop(audio)
                 }.apply {
-                    name = "DEC-Heed-Wake"
+                    name = "DEC-Wake-Detector"
                     isDaemon = true
                     start()
                 }
@@ -163,65 +195,91 @@ class WakeWord(
                 return null
 
             } catch (e: Exception) {
+
                 running = false
 
                 runCatching { audio?.stop() }
                 runCatching { audio?.release() }
                 runCatching { newSession?.close() }
 
+                if (newSession != null) {
+                    session = null
+                }
+
                 recorder = null
-                session = null
                 worker = null
 
-                return "Wake detector could not start: ${e.message}"
+                return "DEC wake detector error: ${e.message}"
             }
         }
     }
 
     fun stop() {
+
         val oldWorker: Thread?
         val oldRecorder: AudioRecord?
 
         synchronized(lock) {
+
             running = false
+
             oldWorker = worker
             oldRecorder = recorder
+
             worker = null
             recorder = null
         }
 
-        runCatching { oldRecorder?.stop() }
-
-        if (oldWorker != null && oldWorker !== Thread.currentThread()) {
-            runCatching { oldWorker.join(1500) }
+        runCatching {
+            oldRecorder?.stop()
         }
 
-        runCatching { oldRecorder?.release() }
+        if (
+            oldWorker != null &&
+            oldWorker !== Thread.currentThread()
+        ) {
+            runCatching {
+                oldWorker.join(2000)
+            }
+        }
+
+        runCatching {
+            oldRecorder?.release()
+        }
 
         synchronized(lock) {
             preprocessor.reset()
             aboveCount = 0
+            wakeCallbackActive.set(false)
         }
     }
 
     fun release() {
+
         stop()
 
         synchronized(lock) {
-            runCatching { session?.close() }
+
+            runCatching {
+                session?.close()
+            }
+
             session = null
 
-            // OrtEnvironment is a process-wide singleton.
+            // OrtEnvironment is process-wide.
             // Do not close it here.
             environment = null
         }
     }
 
     private fun listenLoop(audio: AudioRecord) {
+
         val pcm = ShortArray(CHUNK)
 
         try {
+
             while (running) {
+
                 val count = audio.read(
                     pcm,
                     0,
@@ -251,6 +309,7 @@ class WakeWord(
                 }
 
                 val features = preprocessor.computeMel()
+
                 val probability = predict(features)
 
                 if (probability > THRESHOLD) {
@@ -263,50 +322,87 @@ class WakeWord(
 
                 if (
                     aboveCount >= CONSECUTIVE &&
-                    now - lastTrigger > REFRACTORY_MS
+                    now - lastTrigger >= REFRACTORY_MS
                 ) {
+
                     lastTrigger = now
                     aboveCount = 0
 
-                    onWake()
+                    if (
+                        wakeCallbackActive.compareAndSet(
+                            false,
+                            true
+                        )
+                    ) {
+
+                        try {
+                            onWake()
+                        } catch (e: Exception) {
+                            wakeCallbackActive.set(false)
+                            throw e
+                        }
+                    }
                 }
             }
+
         } catch (e: Exception) {
+
             if (running) {
+
                 running = false
+
                 Dec.wakeActive.value = false
+
                 Dec.notice.value =
-                    "Wake detector stopped: ${e.message ?: "microphone error"}"
+                    "DEC wake detector stopped: " +
+                    (e.message ?: "Microphone error")
             }
         }
     }
 
     private fun predict(features: FloatArray): Double {
+
         val env = environment ?: return 0.0
         val ort = session ?: return 0.0
 
         val input = OnnxTensor.createTensor(
             env,
             FloatBuffer.wrap(features),
-            longArrayOf(1, MEL.toLong(), FRAMES.toLong())
+            longArrayOf(
+                1,
+                MEL.toLong(),
+                FRAMES.toLong()
+            )
         )
 
         input.use {
-            ort.run(mapOf("mel" to input)).use { result ->
+
+            ort.run(
+                mapOf("mel" to input)
+            ).use { result ->
+
                 val output = result[0].value
 
                 val logit = when (output) {
-                    is FloatArray -> output[0].toDouble()
+
+                    is FloatArray ->
+                        output[0].toDouble()
 
                     is Array<*> -> {
                         when (val first = output[0]) {
-                            is FloatArray -> first[0].toDouble()
-                            is Number -> first.toDouble()
+                            is FloatArray ->
+                                first[0].toDouble()
+
+                            is Number ->
+                                first.toDouble()
+
                             else -> 0.0
                         }
                     }
 
-                    is Number -> output.toDouble()
+                    is Number ->
+                        output.toDouble()
+
                     else -> 0.0
                 }
 
@@ -316,6 +412,7 @@ class WakeWord(
     }
 
     private fun energyGate(): Boolean {
+
         val audio = preprocessor.filteredBuffer
 
         var sum = 0.0
@@ -353,6 +450,9 @@ class WakeWord(
 
         val filteredBuffer = FloatArray(WINDOW)
 
+        // Separate peak-normalized audio buffer.
+        private val normalizedBuffer = FloatArray(WINDOW)
+
         private val melBuffer = FloatArray(MEL * FRAMES)
         private val output = FloatArray(MEL * FRAMES)
 
@@ -371,16 +471,22 @@ class WakeWord(
             buildMelWeights()
 
         init {
+
             val offset = (FFT - 400) / 2
 
             for (n in 0 until 400) {
+
                 window[offset + n] =
-                    0.5 - 0.5 * cos(2.0 * PI * n / 400.0)
+                    0.5 - 0.5 *
+                    cos(2.0 * PI * n / 400.0)
             }
         }
 
         fun reset() {
+
             filteredBuffer.fill(0f)
+            normalizedBuffer.fill(0f)
+
             melBuffer.fill(0f)
             output.fill(0f)
 
@@ -391,17 +497,20 @@ class WakeWord(
         }
 
         fun ingest(samples: FloatArray) {
+
             if (samples.isEmpty()) return
 
             val filtered = DoubleArray(samples.size) {
                 samples[it].toDouble()
             }
 
+            // High-pass and mains notch filtering.
             cascade.process(filtered)
 
             val n = filtered.size
 
             if (n >= WINDOW) {
+
                 val start = n - WINDOW
 
                 for (i in 0 until WINDOW) {
@@ -410,7 +519,9 @@ class WakeWord(
                 }
 
                 pendingSamples = WINDOW
+
             } else {
+
                 filteredBuffer.copyInto(
                     filteredBuffer,
                     0,
@@ -428,7 +539,38 @@ class WakeWord(
             }
         }
 
+        /**
+         * Peak normalization to -3 dBFS.
+         */
+        private fun normalizeAudio() {
+
+            var peak = 0.0
+
+            for (sample in filteredBuffer) {
+
+                peak = max(
+                    peak,
+                    kotlin.math.abs(sample.toDouble())
+                )
+            }
+
+            val scale = if (peak > 1e-9) {
+                TARGET_PEAK / peak
+            } else {
+                1.0
+            }
+
+            for (i in filteredBuffer.indices) {
+
+                normalizedBuffer[i] =
+                    (filteredBuffer[i] * scale).toFloat()
+            }
+        }
+
         fun computeMel(): FloatArray {
+
+            normalizeAudio()
+
             val advance = min(
                 FRAMES,
                 pendingSamples / HOP
@@ -436,13 +578,19 @@ class WakeWord(
 
             pendingSamples -= advance * HOP
 
-            if (!initialized || advance >= FRAMES - 3) {
+            if (
+                !initialized ||
+                advance >= FRAMES - 3
+            ) {
+
                 for (i in 0 until FRAMES) {
                     computeFrame(i)
                 }
 
                 initialized = true
+
             } else if (advance > 0) {
+
                 shiftAndRecompute(advance)
             }
 
@@ -450,10 +598,13 @@ class WakeWord(
         }
 
         private fun shiftAndRecompute(advance: Int) {
+
             for (m in 0 until MEL) {
+
                 val base = m * FRAMES
 
                 for (f in 0 until FRAMES - advance) {
+
                     melBuffer[base + f] =
                         melBuffer[base + f + advance]
                 }
@@ -473,21 +624,28 @@ class WakeWord(
         }
 
         private fun computeFrame(frame: Int) {
+
             val low = frame * HOP - FFT / 2
 
             for (n in 0 until FFT) {
+
                 var index = low + n
 
                 if (index < 0) {
                     index = -index
                 } else if (index >= WINDOW) {
-                    index = 2 * (WINDOW - 1) - index
+                    index =
+                        2 * (WINDOW - 1) - index
                 }
 
-                index = index.coerceIn(0, WINDOW - 1)
+                index = index.coerceIn(
+                    0,
+                    WINDOW - 1
+                )
 
                 real[n] =
-                    filteredBuffer[index].toDouble() * window[n]
+                    normalizedBuffer[index].toDouble() *
+                    window[n]
 
                 imag[n] = 0.0
             }
@@ -495,6 +653,7 @@ class WakeWord(
             fft()
 
             for (k in spectrum.indices) {
+
                 val r = real[k]
                 val im = imag[k]
 
@@ -502,6 +661,7 @@ class WakeWord(
             }
 
             for (m in 0 until MEL) {
+
                 var sum = 0.0
 
                 for ((bin, weight) in melWeights[m]) {
@@ -513,8 +673,13 @@ class WakeWord(
             }
         }
 
+        /**
+         * Cepstral mean normalization.
+         */
         private fun cmn(): FloatArray {
+
             for (m in 0 until MEL) {
+
                 val base = m * FRAMES
 
                 var sum = 0.0
@@ -526,6 +691,7 @@ class WakeWord(
                 val mean = sum / FRAMES
 
                 for (f in 0 until FRAMES) {
+
                     output[base + f] =
                         (melBuffer[base + f] - mean).toFloat()
                 }
@@ -535,9 +701,11 @@ class WakeWord(
         }
 
         private fun fft() {
+
             var j = 0
 
             for (i in 1 until FFT) {
+
                 var bit = FFT shr 1
 
                 while ((j and bit) != 0) {
@@ -548,6 +716,7 @@ class WakeWord(
                 j = j xor bit
 
                 if (i < j) {
+
                     val tr = real[i]
                     real[i] = real[j]
                     real[j] = tr
@@ -561,11 +730,14 @@ class WakeWord(
             var length = 2
 
             while (length <= FFT) {
+
                 val half = length / 2
                 val step = FFT / length
 
                 for (start in 0 until FFT step length) {
+
                     for (k in 0 until half) {
+
                         val angle =
                             -2.0 * PI * k * step / FFT
 
@@ -600,33 +772,43 @@ class WakeWord(
                 2595.0 * log10(1.0 + hz / 700.0)
 
             fun melToHz(mel: Double): Double =
-                700.0 * (Math.pow(10.0, mel / 2595.0) - 1.0)
+                700.0 * (
+                    Math.pow(10.0, mel / 2595.0) - 1.0
+                )
 
             val minMel = hzToMel(0.0)
             val maxMel = hzToMel(8000.0)
 
             val points = DoubleArray(MEL + 2) {
+
                 melToHz(
                     minMel +
-                        (maxMel - minMel) * it / (MEL + 1)
+                    (maxMel - minMel) *
+                    it / (MEL + 1)
                 )
             }
 
             return Array(MEL) { m ->
+
                 val left = points[m]
                 val center = points[m + 1]
                 val right = points[m + 2]
 
-                val pairs = ArrayList<Pair<Int, Double>>()
+                val pairs =
+                    ArrayList<Pair<Int, Double>>()
 
                 for (bin in 0..FFT / 2) {
-                    val hz = bin * RATE.toDouble() / FFT
+
+                    val hz =
+                        bin * RATE.toDouble() / FFT
 
                     val rising =
-                        (hz - left) / (center - left + 1e-9)
+                        (hz - left) /
+                        (center - left + 1e-9)
 
                     val falling =
-                        (right - hz) / (right - center + 1e-9)
+                        (right - hz) /
+                        (right - center + 1e-9)
 
                     val weight = max(
                         0.0,
@@ -644,9 +826,8 @@ class WakeWord(
     }
 
     /**
-     * Heed SOS filters.
+     * SOS filter cascade.
      * Direct Form II Transposed.
-     * State is retained between microphone chunks.
      */
     private class FilterCascade {
 
@@ -663,14 +844,16 @@ class WakeWord(
         private class Stage(
             val sections: List<Section>
         ) {
+
             val s1 = DoubleArray(sections.size)
             val s2 = DoubleArray(sections.size)
+
             var initialized = false
         }
 
         private val stages = listOf(
 
-            // 100 Hz high-pass filter
+            // 100 Hz high-pass filter.
             Stage(
                 listOf(
                     Section(
@@ -682,113 +865,4 @@ class WakeWord(
                         -0.9042459858119207,
                         0.9042459858119251
                     ),
-                    Section(
-                        1.0, -2.0, 1.0,
-                        -1.935283933705594,
-                        0.9367771186738887,
-                        0.0, 0.0
-                    ),
-                    Section(
-                        1.0, -2.0, 1.0,
-                        -1.9557989964479017,
-                        0.9573080099893462,
-                        0.0, 0.0
-                    ),
-                    Section(
-                        1.0, -2.0, 1.0,
-                        -1.9832678076605255,
-                        0.9847980149995752,
-                        0.0, 0.0
-                    )
-                )
-            ),
-
-            // 50 Hz notch filter
-            Stage(
-                listOf(
-                    Section(
-                        0.9996728578106041,
-                        -1.9989603227048798,
-                        0.9996728578106046,
-                        -1.9989603227048796,
-                        0.9993457156212082,
-                        0.00032714218982763185,
-                        0.0003271421889648693
-                    )
-                )
-            ),
-
-            // 60 Hz notch filter
-            Stage(
-                listOf(
-                    Section(
-                        0.9996074550501642,
-                        -1.9986599884535616,
-                        0.9996074550501639,
-                        -1.9986599884535616,
-                        0.999214910100328,
-                        0.0003925449500836464,
-                        0.0003925449495881815
-                    )
-                )
-            )
-        )
-
-        fun reset() {
-            for (stage in stages) {
-                stage.s1.fill(0.0)
-                stage.s2.fill(0.0)
-                stage.initialized = false
-            }
-        }
-
-        fun process(samples: DoubleArray) {
-            if (samples.isEmpty()) return
-
-            for (stage in stages) {
-
-                // Initialize each stage using its own first input sample.
-                if (!stage.initialized) {
-                    val first = samples[0]
-
-                    for (s in stage.sections.indices) {
-                        val section = stage.sections[s]
-
-                        stage.s1[s] = section.zi1 * first
-                        stage.s2[s] = section.zi2 * first
-                    }
-
-                    stage.initialized = true
-                }
-
-                // Process each SOS section in sequence.
-                for (s in stage.sections.indices) {
-                    val section = stage.sections[s]
-
-                    var state1 = stage.s1[s]
-                    var state2 = stage.s2[s]
-
-                    for (i in samples.indices) {
-                        val x = samples[i]
-
-                        val y = section.b0 * x + state1
-
-                        state1 =
-                            section.b1 * x +
-                            state2 -
-                            section.a1 * y
-
-                        state2 =
-                            section.b2 * x -
-                            section.a2 * y
-
-                        samples[i] = y
-                    }
-
-                    stage.s1[s] = state1
-                    stage.s2[s] = state2
-                }
-            }
-        }
-    }
-}
+                    
