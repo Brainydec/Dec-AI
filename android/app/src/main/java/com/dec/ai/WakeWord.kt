@@ -1,4 +1,3 @@
-Kotlin
 
 package com.dec.ai
 
@@ -14,7 +13,6 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import java.nio.FloatBuffer
 import kotlin.math.PI
-import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.ln
@@ -30,7 +28,7 @@ import kotlin.math.sqrt
  * Model: assets/wake.onnx
  * Metadata: assets/wake.json
  * Input: [1, 40, 101]
- * Output: logit, converted to probability using sigmoid.
+ * Output: logit converted to probability using sigmoid.
  */
 class WakeWord(
     private val context: Context,
@@ -60,7 +58,6 @@ class WakeWord(
 
     private var worker: Thread? = null
     private var recorder: AudioRecord? = null
-
     private var environment: OrtEnvironment? = null
     private var session: OrtSession? = null
 
@@ -96,6 +93,9 @@ class WakeWord(
                 return "Microphone permission is required for wake detection."
             }
 
+            var newSession: OrtSession? = null
+            var audio: AudioRecord? = null
+
             try {
                 val env = OrtEnvironment.getEnvironment()
 
@@ -104,10 +104,12 @@ class WakeWord(
                     .use { it.readBytes() }
 
                 val options = OrtSession.SessionOptions()
-                val newSession = env.createSession(
-                    modelBytes,
-                    options
-                )
+
+                try {
+                    newSession = env.createSession(modelBytes, options)
+                } finally {
+                    runCatching { options.close() }
+                }
 
                 val minBuffer = AudioRecord.getMinBufferSize(
                     RATE,
@@ -120,7 +122,7 @@ class WakeWord(
                     return "This phone does not support the required microphone format."
                 }
 
-                val audio = AudioRecord(
+                audio = AudioRecord(
                     MediaRecorder.AudioSource.MIC,
                     RATE,
                     AudioFormat.CHANNEL_IN_MONO,
@@ -142,9 +144,13 @@ class WakeWord(
                 aboveCount = 0
                 lastTrigger = 0L
 
-                running = true
-
                 audio.startRecording()
+
+                if (audio.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                    throw IllegalStateException("Microphone did not start recording.")
+                }
+
+                running = true
 
                 worker = Thread {
                     listenLoop(audio)
@@ -158,10 +164,14 @@ class WakeWord(
 
             } catch (e: Exception) {
                 running = false
-                runCatching { recorder?.release() }
+
+                runCatching { audio?.stop() }
+                runCatching { audio?.release() }
+                runCatching { newSession?.close() }
+
                 recorder = null
-                runCatching { session?.close() }
                 session = null
+                worker = null
 
                 return "Wake detector could not start: ${e.message}"
             }
@@ -183,9 +193,7 @@ class WakeWord(
         runCatching { oldRecorder?.stop() }
 
         if (oldWorker != null && oldWorker !== Thread.currentThread()) {
-            runCatching {
-                oldWorker.join(1200)
-            }
+            runCatching { oldWorker.join(1500) }
         }
 
         runCatching { oldRecorder?.release() }
@@ -203,7 +211,8 @@ class WakeWord(
             runCatching { session?.close() }
             session = null
 
-            runCatching { environment?.close() }
+            // OrtEnvironment is a process-wide singleton.
+            // Do not close it here.
             environment = null
         }
     }
@@ -220,7 +229,15 @@ class WakeWord(
                     AudioRecord.READ_BLOCKING
                 )
 
-                if (count <= 0) continue
+                if (!running) break
+
+                if (count < 0) {
+                    throw IllegalStateException(
+                        "Microphone read failed: $count"
+                    )
+                }
+
+                if (count == 0) continue
 
                 val samples = FloatArray(count) { i ->
                     pcm[i] / 32768.0f
@@ -250,12 +267,16 @@ class WakeWord(
                 ) {
                     lastTrigger = now
                     aboveCount = 0
+
                     onWake()
                 }
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             if (running) {
                 running = false
+                Dec.wakeActive.value = false
+                Dec.notice.value =
+                    "Wake detector stopped: ${e.message ?: "microphone error"}"
             }
         }
     }
@@ -273,16 +294,18 @@ class WakeWord(
         input.use {
             ort.run(mapOf("mel" to input)).use { result ->
                 val output = result[0].value
+
                 val logit = when (output) {
                     is FloatArray -> output[0].toDouble()
+
                     is Array<*> -> {
-                        val first = output[0]
-                        when (first) {
+                        when (val first = output[0]) {
                             is FloatArray -> first[0].toDouble()
                             is Number -> first.toDouble()
                             else -> 0.0
                         }
                     }
+
                     is Number -> output.toDouble()
                     else -> 0.0
                 }
@@ -292,10 +315,6 @@ class WakeWord(
         }
     }
 
-    /**
-     * RMS and voice-band power gate.
-     * Operates on the filtered one-second audio buffer.
-     */
     private fun energyGate(): Boolean {
         val audio = preprocessor.filteredBuffer
 
@@ -330,18 +349,12 @@ class WakeWord(
         return fraction >= BAND_THRESHOLD
     }
 
-    /**
-     * Heed streaming preprocessing:
-     * causal HPF + 50/60 Hz notch,
-     * 1-second filtered ring buffer,
-     * STFT + mel + CMN.
-     */
     private class Preprocessor {
 
         val filteredBuffer = FloatArray(WINDOW)
 
-        private val melBuffer =
-            FloatArray(MEL * FRAMES)
+        private val melBuffer = FloatArray(MEL * FRAMES)
+        private val output = FloatArray(MEL * FRAMES)
 
         private var pendingSamples = 0
         private var initialized = false
@@ -352,12 +365,9 @@ class WakeWord(
         private val imag = DoubleArray(FFT)
         private val spectrum = DoubleArray(FFT / 2 + 1)
 
-        private val output =
-            FloatArray(MEL * FRAMES)
-
         private val window = DoubleArray(FFT)
 
-        private val melWeights: Array<Array<Pair<Int, Double>>> =
+        private val melWeights =
             buildMelWeights()
 
         init {
@@ -372,8 +382,11 @@ class WakeWord(
         fun reset() {
             filteredBuffer.fill(0f)
             melBuffer.fill(0f)
+            output.fill(0f)
+
             pendingSamples = 0
             initialized = false
+
             cascade.reset()
         }
 
@@ -429,7 +442,6 @@ class WakeWord(
                 }
 
                 initialized = true
-
             } else if (advance > 0) {
                 shiftAndRecompute(advance)
             }
@@ -581,9 +593,6 @@ class WakeWord(
             }
         }
 
-        /**
-         * Same HTK mel filterbank construction as heed/audio.py.
-         */
         private fun buildMelWeights():
             Array<Array<Pair<Int, Double>>> {
 
@@ -591,7 +600,7 @@ class WakeWord(
                 2595.0 * log10(1.0 + hz / 700.0)
 
             fun melToHz(mel: Double): Double =
-                700.0 * (10.0.pow10(mel / 2595.0) - 1.0)
+                700.0 * (Math.pow(10.0, mel / 2595.0) - 1.0)
 
             val minMel = hzToMel(0.0)
             val maxMel = hzToMel(8000.0)
@@ -632,14 +641,12 @@ class WakeWord(
                 pairs.toTypedArray()
             }
         }
-
-        private fun Double.pow10(power: Double): Double =
-            kotlin.math.pow(10.0, power)
     }
 
     /**
-     * Exact Heed SOS coefficients.
-     * Direct Form II Transposed, with retained streaming state.
+     * Heed SOS filters.
+     * Direct Form II Transposed.
+     * State is retained between microphone chunks.
      */
     private class FilterCascade {
 
@@ -663,6 +670,7 @@ class WakeWord(
 
         private val stages = listOf(
 
+            // 100 Hz high-pass filter
             Stage(
                 listOf(
                     Section(
@@ -695,6 +703,7 @@ class WakeWord(
                 )
             ),
 
+            // 50 Hz notch filter
             Stage(
                 listOf(
                     Section(
@@ -709,6 +718,7 @@ class WakeWord(
                 )
             ),
 
+            // 60 Hz notch filter
             Stage(
                 listOf(
                     Section(
@@ -737,17 +747,48 @@ class WakeWord(
 
             for (stage in stages) {
 
+                // Initialize each stage using its own first input sample.
                 if (!stage.initialized) {
                     val first = samples[0]
 
                     for (s in stage.sections.indices) {
                         val section = stage.sections[s]
 
-                        stage.s1[s] = state1
-                        stage.s2[s] = state2
+                        stage.s1[s] = section.zi1 * first
+                        stage.s2[s] = section.zi2 * first
+                    }
+
+                    stage.initialized = true
+                }
+
+                // Process each SOS section in sequence.
+                for (s in stage.sections.indices) {
+                    val section = stage.sections[s]
+
+                    var state1 = stage.s1[s]
+                    var state2 = stage.s2[s]
+
+                    for (i in samples.indices) {
+                        val x = samples[i]
+
+                        val y = section.b0 * x + state1
+
+                        state1 =
+                            section.b1 * x +
+                            state2 -
+                            section.a1 * y
+
+                        state2 =
+                            section.b2 * x -
+                            section.a2 * y
+
+                        samples[i] = y
+                    }
+
+                    stage.s1[s] = state1
+                    stage.s2[s] = state2
                 }
             }
         }
     }
-    }
-    
+}
