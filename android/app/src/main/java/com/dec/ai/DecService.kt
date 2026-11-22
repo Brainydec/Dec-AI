@@ -289,58 +289,56 @@ class DecService : Service() {
         }
     }
 
+    /** Bounded observe-plan-act loop: act, inspect the result, then plan the next dependent step. */
     private suspend fun handle(said: String) {
-
         Dec.addMessage(Msg(true, said))
-        Dec.state.value = DecState.THINKING
-        Dec.notice.value = "DEC is thinking..."
-
-        val response = brain.ask(
-            said,
-            Dec.messages.value.dropLast(1).takeLast(8)
-        )
-
-        Dec.online.value = response.online
-
-        // Never announce an intended action as completed before the executor
-        // has returned. If execution fails, speak the executor's failure instead.
-        if (response.actions.isEmpty()) {
-            if (response.reply.isNotBlank()) {
-                Dec.addMessage(Msg(false, response.reply))
-                say(response.reply)
-            }
-            return
-        }
-
-        val outcomes = mutableListOf<String>()
-        for ((index, action) in response.actions.withIndex()) {
+        executor.newTask()
+        val history = Dec.messages.value.dropLast(1).takeLast(8)
+        val turns = mutableListOf<Msg>()
+        var input = said
+        var finalSpoken = ""
+        var finished = false
+        for (step in 0 until MAX_AGENT_STEPS) {
+            currentCoroutineContext().ensureActive()
             if (stopping || prefs.emergencyStop) break
             Dec.state.value = DecState.THINKING
-            val (tool, args) = action
-            val result = executor.run(tool, args, response.online)
-            if (result.isNotBlank()) {
-                outcomes += result
-                // Successful actions often return a confirmation sentence. Continue
-                // the plan unless the executor reports a failure, denial, or asks
-                // the user to complete a step. Never blindly run later steps then.
-                val terminal = Regex(
-                    "(?i)\\b(couldn't|could not|didn't|did not|failed|failure|blocked|not allowed|not sent|won't|will not|cancelled|canceled|permission is missing|need the .* permission|couldn't verify|could not verify|stopped rather than guessing)\\b"
-                ).containsMatchIn(result)
-                if (terminal) break
+            Dec.notice.value = if (step == 0) "DEC is planning..." else "DEC is checking the next step..."
+            val response = brain.ask(input, history + turns)
+            Dec.online.value = response.online
+            if (response.actions.isEmpty()) {
+                finalSpoken = response.reply.ifBlank { "I could not determine the next safe step." }
+                finished = true
+                break
             }
+            val results = mutableListOf<String>()
+            var stopPlan = false
+            for ((tool, args) in response.actions) {
+                currentCoroutineContext().ensureActive()
+                if (stopping || prefs.emergencyStop) { stopPlan = true; break }
+                Dec.state.value = DecState.THINKING
+                val result = executor.run(tool, args, response.online)
+                results += "$tool -> ${result.ifBlank { "Action returned without a message." }}"
+                if (result.isNotBlank()) finalSpoken = result
+                val terminal = Regex("(?i)\\b(could|cannot|can.t|did|failed|failure|blocked|not allowed|not sent|won.t|will not|cancelled|canceled|not enabled|permission is missing|need the .* permission|stopped rather than guessing)\\b").containsMatchIn(result)
+                if (terminal) { stopPlan = true; break }
+            }
+            if (stopPlan || !response.more || !response.online || step == MAX_AGENT_STEPS - 1) {
+                finished = true
+                if (!response.more && response.reply.isNotBlank()) finalSpoken = response.reply
+                else if (response.more && step == MAX_AGENT_STEPS - 1) finalSpoken = "I reached the eight-step safety limit. The task may need another request to finish."
+                else if (response.more && !response.online) finalSpoken = "I completed the available offline step, but multi-step planning needs an internet connection."
+                break
+            }
+            val observation = executor.takeObservation()
+            val resultText = results.joinToString("\n")
+            turns += Msg(true, input.take(600))
+            turns += Msg(false, "[RESULT]\n$resultText" + if (observation.isNotBlank()) "\n[SCREEN]\n${observation.take(4500)}" else "")
+            input = "Continue the original user task. Do not repeat completed actions. If the goal is achieved, finish. [RESULT]\n$resultText" + if (observation.isNotBlank()) "\n[SCREEN]\n${observation.take(4500)}" else ""
+            delay(450)
         }
-
-        val spoken = if (outcomes.isNotEmpty()) {
-            outcomes.joinToString(" ")
-        } else {
-            response.reply.ifBlank { "The requested actions were executed." }
-        }
-        if (spoken.isNotBlank()) {
-            Dec.addMessage(Msg(false, spoken))
-            say(spoken)
-        }
+        if (!finished && finalSpoken.isBlank()) finalSpoken = "I stopped because I reached the safe task-step limit."
+        if (finalSpoken.isNotBlank()) { Dec.addMessage(Msg(false, finalSpoken)); say(finalSpoken) }
     }
-
     private suspend fun say(text: String) {
 
         val previous = Dec.state.value
@@ -458,6 +456,7 @@ class DecService : Service() {
 
     companion object {
 
+        private const val MAX_AGENT_STEPS = 8
         const val ACTION_STOP = "com.dec.ai.STOP"
         const val ACTION_ESTOP = "com.dec.ai.ESTOP"
         const val ACTION_TALK = "com.dec.ai.TALK"

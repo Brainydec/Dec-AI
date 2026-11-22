@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
+      - feature/v2-agent-loop-and-app-control
 concurrency:
   group: dec-apk-build
   cancel-in-progress: false
@@ -56,6 +60,7 @@ jobs:
           "$APKSIGNER" verify --verbose --print-certs "$APK"
           sha256sum "$APK"
       - name: Publish APK as a GitHub Release
+        if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: apk-${{ github.run_number }}

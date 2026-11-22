@@ -25,7 +25,8 @@ import java.util.concurrent.TimeUnit
 data class BrainResult(
     val reply: String,
     val actions: List<Pair<String, JSONObject>>,
-    val online: Boolean
+    val online: Boolean,
+    val more: Boolean = false
 )
 
 class Brain(private val ctx: Context) {
@@ -441,7 +442,8 @@ class Brain(private val ctx: Context) {
                             (action.optJSONObject("args") ?: JSONObject())
                     }
                 },
-                online = true
+                online = true,
+                more = json.optBoolean("more", false)
             )
         }
     }
@@ -449,6 +451,7 @@ class Brain(private val ctx: Context) {
     private fun needsScreenContext(text: String): Boolean {
         val command = text.lowercase(Locale.ROOT)
         return listOf(
+            "[result]", "[screen]", "continue the original user task",
             "screen", "tap", "click", "press", "select", "choose",
             "button", "icon", "menu", "this page", "this app",
             "what is open", "what's open", "what can you see"

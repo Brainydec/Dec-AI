@@ -96,3 +96,22 @@ def test_close_app_is_allowlisted():
     action = brain.clean_actions({"actions": [{"tool": "close_app", "args": {}}]})
     assert len(action) == 1
     assert action[0].tool == "close_app"
+
+
+def test_navigation_tool_is_allowlisted():
+    action = brain.clean_actions({"actions": [{"tool": "navigate", "args": {"to": "recents"}}]})
+    assert len(action) == 1
+    assert action[0].tool == "navigate"
+
+
+def test_chat_response_supports_agent_continuation():
+    from app.schemas import ChatResponse
+    response = ChatResponse(reply="Next step", actions=[{"tool": "read_screen", "args": {}}], more=True)
+    assert response.more is True
+
+
+def test_agent_prompt_describes_observe_plan_act_loop():
+    prompt = brain.build_system(ChatRequest(text="Open an app and search"))
+    assert '"more": true' in prompt
+    assert "[RESULT]" in prompt and "[SCREEN]" in prompt
+    assert "up to 8 rounds" in prompt

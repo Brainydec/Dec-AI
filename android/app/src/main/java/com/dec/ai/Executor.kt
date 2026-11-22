@@ -23,6 +23,18 @@ import kotlinx.coroutines.delay
  */
 class Executor(private val ctx: Context, private val confirm: suspend (String) -> Boolean) {
     private val prefs = Prefs.get(ctx)
+    private var screenApproved = false
+    private val sensitiveApp = Regex("(?i)bank|wallet|pay|upi|phonepe|paytm|authenticator|keepass|bitwarden|1password|lastpass|password|vault")
+    private val riskyTap = Regex("(?i)\\b(pay|send|transfer|buy|purchase|order|checkout|delete|remove|erase|uninstall|reset|sign out|log ?out|confirm|submit|donate|subscribe|install)\\b")
+    fun newTask() { screenApproved = false }
+    private fun sensitiveScreen(): Boolean = AccessibilityControlService.foregroundPackage()?.let { sensitiveApp.containsMatchIn(it) } == true
+    suspend fun takeObservation(): String {
+        if (!requireAccessibility()) return ""
+        delay(700)
+        val tree = AccessibilityControlService.visibleText()
+        val ocr = AccessibilityControlService.visualText()
+        return listOf(tree, ocr).filter { it.isNotBlank() }.distinct().joinToString(". ").take(4500)
+    }
 
     /** Returns text to speak ("" = success, nothing to say). */
     suspend fun run(toolId: String, args: JSONObject, online: Boolean): String {
@@ -63,7 +75,8 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
             "scroll_screen" -> scrollScreen(a.optString("direction", "down"))
             "read_screen" -> readScreen()
             "press_back" -> pressBack()
-            "close_app" -> closeApp()
+            "close_app" -> closeApp(a.optString("name", "current"))
+            "navigate" -> navigate(a.optString("to"))
             "tap_screen" -> tapScreen(a.optString("label"))
             "type_text" -> typeText(a.optString("text"))
             "set_alarm" -> alarm(a)
@@ -123,6 +136,8 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
 
     private suspend fun scrollScreen(direction: String): String {
         if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
+        if (sensitiveScreen()) return "I will not inspect or control a banking, wallet, or password app."
+        if (!approveScreenOnce()) return "Okay, I will not control the screen."
         val normalized = if (direction.equals("up", true)) "up" else "down"
         val before = listOf(AccessibilityControlService.visibleText(), AccessibilityControlService.visualText())
             .filter { it.isNotBlank() }.joinToString(". ")
@@ -140,19 +155,42 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
 
     private suspend fun readScreen(): String {
         if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
+        if (sensitiveScreen()) return "I will not inspect or control a banking, wallet, or password app."
+        if (!approveScreenOnce()) return "Okay, I will not read the screen."
         val tree = AccessibilityControlService.visibleText()
         val ocr = AccessibilityControlService.visualText()
         val visible = listOf(tree, ocr).filter { it.isNotBlank() }.distinct().joinToString(". ")
         return visible.ifBlank { "I couldn't read visible text from the accessibility tree or screen OCR." }
     }
 
-    private fun closeApp(): String {
-        if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Enable it in Android Accessibility settings first."
-        return if (AccessibilityControlService.home()) {
-            "Returned to the Home screen. Android does not allow DEC to force-stop another app."
-        } else {
-            "Android did not allow DEC to return to the Home screen."
+    private suspend fun closeApp(rawName: String): String {
+        if (!requireAccessibility()) return "DEC Accessibility is not enabled."
+        val name = rawName.trim().ifBlank { "current" }
+        if (name.equals("all", true) || name.equals("everything", true) || name.equals("all apps", true)) {
+            return if (AccessibilityControlService.clearRecents()) "Cleared the visible Recents list. Android may keep app processes alive." else "Returned Home, but could not find Clear all in Recents."
         }
+        val pkg = if (name.equals("current", true) || name.equals("this", true) || name.equals("this app", true)) AccessibilityControlService.foregroundPackage() else findLauncherPackage(name)
+        if (pkg == null) return "I could not identify an installed app called $name."
+        if (pkg == ctx.packageName) return "That is DEC itself. Use Stop DEC to stop my service."
+        val label = AccessibilityControlService.appLabel(pkg)
+        return if (AccessibilityControlService.dismissRecentsCard(label)) "Dismissed $label from Recents. Android may keep its process alive." else "Returned Home, but could not reliably dismiss $label from Recents."
+    }
+
+    private fun navigate(destination: String): String {
+        val ok = when (destination.trim().lowercase()) {
+            "home" -> AccessibilityControlService.home()
+            "back" -> AccessibilityControlService.back()
+            "recents", "recent apps", "overview" -> AccessibilityControlService.recents()
+            else -> return "I can navigate Home, Back, or Recents."
+        }
+        return if (ok) "Navigation action sent: $destination." else "Android did not accept that navigation action."
+    }
+
+    private suspend fun approveScreenOnce(): Boolean {
+        if (screenApproved) return true
+        if (!confirm("May I read and control the visible screen to complete this task?")) return false
+        screenApproved = true
+        return true
     }
 
     private fun pressBack(): String {
@@ -163,7 +201,9 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
     private suspend fun tapScreen(label: String): String {
         if (label.isBlank()) return "Tell me which visible control to tap."
         if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
-        if (!confirm("Tap '$label' on the current screen?")) return "Okay, I won't tap it."
+        if (sensitiveScreen()) return "I will not inspect or control a banking, wallet, or password app."
+        if (!approveScreenOnce()) return "Okay, I will not control the screen."
+        if (riskyTap.containsMatchIn(label) && !confirm("This action may be sensitive. Tap '$label'?")) return "Okay, I did not tap it."
         val before = listOf(AccessibilityControlService.visibleText(), AccessibilityControlService.visualText())
             .filter { it.isNotBlank() }.joinToString(". ")
         if (!AccessibilityControlService.tapVisibleText(label)) {
@@ -182,12 +222,26 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
     private suspend fun typeText(value: String): String {
         if (value.isBlank()) return "Tell me what text to type."
         if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
-        if (!confirm("Type this text into the currently focused field: $value")) return "Okay, I won't type it."
+        if (sensitiveScreen()) return "I will not inspect or control a banking, wallet, or password app."
+        if (!approveScreenOnce()) return "Okay, I will not control the screen."
         return if (AccessibilityControlService.typeIntoFocusedField(value)) {
             "Typed the text into the focused field."
         } else {
             "I couldn't type there. Make sure a normal text field is focused; password fields are blocked."
         }
+    }
+
+    private fun findLauncherPackage(name: String): String? {
+        val pm = ctx.packageManager
+        val wanted = name.lowercase().trim().replace(Regex("[^a-z0-9]"), "")
+        if (wanted.isBlank()) return null
+        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val candidates = pm.queryIntentActivities(launcher, PackageManager.MATCH_ALL)
+        return candidates.firstOrNull { it.loadLabel(pm).toString().lowercase().replace(Regex("[^a-z0-9]"), "") == wanted }?.activityInfo?.packageName
+            ?: candidates.firstOrNull {
+                val label = it.loadLabel(pm).toString().lowercase().replace(Regex("[^a-z0-9]"), "")
+                label.contains(wanted) || wanted.contains(label)
+            }?.activityInfo?.packageName
     }
 
     private fun openApp(name: String): String {
