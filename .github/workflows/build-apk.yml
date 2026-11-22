@@ -1,13 +1,12 @@
 name: Build DEC APK
 on:
   workflow_dispatch:
-  pull_request:
-    branches:
-      - main
   push:
     branches:
-      - feature/smart-phone-control
-      - feature/dec-agent-upgrade
+      - main
+concurrency:
+  group: dec-apk-build
+  cancel-in-progress: false
 permissions:
   contents: write
 jobs:
@@ -33,6 +32,13 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      # Persist the debug signing key so APK updates keep the same certificate.
+      # The first build creates it; subsequent builds restore the same key.
+      - name: Restore stable Android debug signing key
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: dec-android-debug-keystore-v1
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
