@@ -4,6 +4,13 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.os.Bundle
 import android.graphics.Path
+import android.graphics.Bitmap
+import android.view.Display
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 import android.graphics.Rect
 import android.accessibilityservice.GestureDescription
 import android.view.accessibility.AccessibilityEvent
@@ -120,6 +127,52 @@ class AccessibilityControlService : AccessibilityService() {
     /** Leaves the foreground app and returns to the Android launcher. */
     fun goHome(): Boolean = performGlobalAction(GLOBAL_ACTION_HOME)
 
+    /**
+     * Adds on-device OCR from a real display capture to the accessibility tree.
+     * Android requires API 30+; on older devices the accessibility tree remains available.
+     */
+    suspend fun visualText(): String {
+        if (android.os.Build.VERSION.SDK_INT < 30) return ""
+        return suspendCancellableCoroutine { continuation ->
+            try {
+                takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor,
+                    object : TakeScreenshotCallback {
+                        override fun onSuccess(result: ScreenshotResult) {
+                            val bitmap = try {
+                                Bitmap.wrapHardwareBuffer(result.hardwareBuffer, result.colorSpace)
+                                    ?.copy(Bitmap.Config.ARGB_8888, false)
+                            } catch (_: Exception) { null }
+                            result.hardwareBuffer.close()
+                            if (bitmap == null) {
+                                if (continuation.isActive) continuation.resume("")
+                                return
+                            }
+                            val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+                            recognizer.process(InputImage.fromBitmap(bitmap, 0))
+                                .addOnSuccessListener { text ->
+                                    if (continuation.isActive) continuation.resume(
+                                        text.textBlocks.joinToString(". ") { it.text }.take(3500)
+                                    )
+                                }
+                                .addOnFailureListener {
+                                    if (continuation.isActive) continuation.resume("")
+                                }
+                                .addOnCompleteListener {
+                                    bitmap.recycle()
+                                    recognizer.close()
+                                }
+                        }
+
+                        override fun onFailure(errorCode: Int) {
+                            if (continuation.isActive) continuation.resume("")
+                        }
+                    })
+            } catch (_: Exception) {
+                if (continuation.isActive) continuation.resume("")
+            }
+        }
+    }
+
     fun readScreen(): String {
         val lines = linkedSetOf<String>()
         for (root in visibleRoots()) {
@@ -203,5 +256,6 @@ class AccessibilityControlService : AccessibilityService() {
         fun back() = active?.pressBack() ?: false
         fun home() = active?.goHome() ?: false
         fun visibleText() = active?.readScreen().orEmpty()
+        suspend fun visualText() = active?.visualText().orEmpty()
     }
 }

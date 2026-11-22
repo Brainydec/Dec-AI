@@ -57,4 +57,7 @@ dependencies {
 
     // ONNX Runtime for Heed wake-word detection
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+
+    // On-device OCR for screen vision on Android 11+.
+    implementation("com.google.mlkit:text-recognition:16.0.1")
 }

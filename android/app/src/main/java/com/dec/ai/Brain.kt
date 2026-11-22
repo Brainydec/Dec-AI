@@ -370,7 +370,7 @@ class Brain(private val ctx: Context) {
         return null
     }
 
-    private fun cloud(
+    private suspend fun cloud(
         text: String,
         history: List<Msg>
     ): BrainResult {
@@ -455,7 +455,7 @@ class Brain(private val ctx: Context) {
         ).any(command::contains)
     }
 
-    private fun deviceContext(includeScreen: Boolean = false): JSONObject {
+    private suspend fun deviceContext(includeScreen: Boolean = false): JSONObject {
 
         val battery = ctx.registerReceiver(
             null,
@@ -524,7 +524,9 @@ class Brain(private val ctx: Context) {
             .put(
                 "screen_text",
                 if (includeScreen && AccessibilityControlService.isConnected()) {
-                    AccessibilityControlService.visibleText().take(4500)
+                    val tree = AccessibilityControlService.visibleText()
+                    val ocr = AccessibilityControlService.visualText()
+                    listOf(tree, ocr).filter { it.isNotBlank() }.distinct().joinToString(". ").take(5000)
                 } else {
                     ""
                 }
