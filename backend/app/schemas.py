@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 
@@ -29,6 +29,7 @@ class ChatRequest(BaseModel):
     memories: list[Memory] = []
     personality: str = "friendly, concise, a little witty"
     custom_instructions: str = ""
+    response_mode: Literal["voice", "text"] = "voice"
     device: DeviceContext = DeviceContext()
 
 
