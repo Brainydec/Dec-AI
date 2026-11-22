@@ -17,7 +17,18 @@ android {
         versionName = "1.0.1"
     }
 
+    signingConfigs {
+        getByName("debug") {
+            // Keep legacy JAR signing for installer compatibility on OEM Android builds.
+            enableV1Signing = true
+            enableV2Signing = true
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             isMinifyEnabled = false
         }
