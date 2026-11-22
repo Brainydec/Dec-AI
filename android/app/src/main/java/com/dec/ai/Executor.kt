@@ -25,6 +25,12 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
     private val prefs = Prefs.get(ctx)
     private var screenApproved = false
     fun newTask() { screenApproved = false }
+    suspend fun takeObservation(): String {
+        if (!requireAccessibility()) return ""
+        val tree = AccessibilityControlService.visibleText()
+        val ocr = AccessibilityControlService.visualText()
+        return listOf(tree, ocr).filter { it.isNotBlank() }.distinct().joinToString(". ").take(4500)
+    }
 
     /** Returns text to speak ("" = success, nothing to say). */
     suspend fun run(toolId: String, args: JSONObject, online: Boolean): String {
