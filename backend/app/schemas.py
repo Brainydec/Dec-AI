@@ -41,3 +41,4 @@ class ChatResponse(BaseModel):
     reply: str
     actions: list[Action] = []
     provider: str = ""
+    more: bool = False
