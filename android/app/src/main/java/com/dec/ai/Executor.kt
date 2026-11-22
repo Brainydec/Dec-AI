@@ -222,6 +222,19 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
         }
     }
 
+    private fun findLauncherPackage(name: String): String? {
+        val pm = ctx.packageManager
+        val wanted = name.lowercase().trim().replace(Regex("[^a-z0-9]"), "")
+        if (wanted.isBlank()) return null
+        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val candidates = pm.queryIntentActivities(launcher, PackageManager.MATCH_ALL)
+        return candidates.firstOrNull { it.loadLabel(pm).toString().lowercase().replace(Regex("[^a-z0-9]"), "") == wanted }?.activityInfo?.packageName
+            ?: candidates.firstOrNull {
+                val label = it.loadLabel(pm).toString().lowercase().replace(Regex("[^a-z0-9]"), "")
+                label.contains(wanted) || wanted.contains(label)
+            }?.activityInfo?.packageName
+    }
+
     private fun openApp(name: String): String {
         val q = name.lowercase().trim()
         if (q.isEmpty()) return "Which app?"
