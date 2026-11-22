@@ -123,7 +123,7 @@ class Brain(private val ctx: Context) {
 
         Regex("""^(?:please )?(?:type|enter|write) (.+?)(?: on (?:my )?(?:keyboard|screen|text field|message box))?$""")
             .find(command)?.let {
-                val value = it.groupValues[1].trim().trim('"', '\\'')
+                val value = it.groupValues[1].trim().trim('"')
                 if (value.isNotBlank()) return result("type_text", JSONObject().put("text", value))
             }
 
