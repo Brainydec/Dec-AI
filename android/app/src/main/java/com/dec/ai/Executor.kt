@@ -124,22 +124,26 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
     private suspend fun scrollScreen(direction: String): String {
         if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
         val normalized = if (direction.equals("up", true)) "up" else "down"
-        val before = AccessibilityControlService.visibleText()
+        val before = listOf(AccessibilityControlService.visibleText(), AccessibilityControlService.visualText())
+            .filter { it.isNotBlank() }.joinToString(". ")
         val accepted = AccessibilityControlService.scrollVisible(normalized)
         if (!accepted) return "I couldn't scroll this screen. It may not contain a scrollable area."
-        delay(550)
-        val after = AccessibilityControlService.visibleText()
+        delay(700)
+        val after = listOf(AccessibilityControlService.visibleText(), AccessibilityControlService.visualText())
+            .filter { it.isNotBlank() }.joinToString(". ")
         return if (after.isNotBlank() && after != before) {
             "Verified: the visible screen content changed after scrolling $normalized."
         } else {
-            "The scroll action was sent, but I couldn't verify that the screen moved."
+            "The scroll gesture was sent, but screen movement could not be verified. I stopped rather than guessing."
         }
     }
 
-    private fun readScreen(): String {
+    private suspend fun readScreen(): String {
         if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
-        val visible = AccessibilityControlService.visibleText()
-        return visible.ifBlank { "I couldn't read any visible text on this screen." }
+        val tree = AccessibilityControlService.visibleText()
+        val ocr = AccessibilityControlService.visualText()
+        val visible = listOf(tree, ocr).filter { it.isNotBlank() }.distinct().joinToString(". ")
+        return visible.ifBlank { "I couldn't read visible text from the accessibility tree or screen OCR." }
     }
 
     private fun closeApp(): String {
