@@ -302,27 +302,32 @@ class DecService : Service() {
 
         Dec.online.value = response.online
 
-        if (response.reply.isNotBlank()) {
-            Dec.addMessage(Msg(false, response.reply))
-            say(response.reply)
+        // Never announce an intended action as completed before the executor
+        // has returned. If execution fails, speak the executor's failure instead.
+        if (response.actions.isEmpty()) {
+            if (response.reply.isNotBlank()) {
+                Dec.addMessage(Msg(false, response.reply))
+                say(response.reply)
+            }
+            return
         }
 
+        val outcomes = mutableListOf<String>()
         for ((tool, args) in response.actions) {
-
             if (stopping || prefs.emergencyStop) break
-
             Dec.state.value = DecState.THINKING
+            val result = executor.run(tool, args, response.online)
+            if (result.isNotBlank()) outcomes += result
+        }
 
-            val result = executor.run(
-                tool,
-                args,
-                response.online
-            )
-
-            if (result.isNotBlank()) {
-                Dec.addMessage(Msg(false, result))
-                say(result)
-            }
+        val spoken = if (outcomes.isNotEmpty()) {
+            outcomes.joinToString(" ")
+        } else {
+            response.reply
+        }
+        if (spoken.isNotBlank()) {
+            Dec.addMessage(Msg(false, spoken))
+            say(spoken)
         }
     }
 
