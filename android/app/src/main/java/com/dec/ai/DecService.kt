@@ -328,10 +328,10 @@ class DecService : Service() {
                 break
             }
             val observation = executor.takeObservation()
-            val resultText = results.joinToString("\\n")
+            val resultText = results.joinToString("\n")
             turns += Msg(true, input.take(600))
-            turns += Msg(false, "[RESULT]\\n$resultText" + if (observation.isNotBlank()) "\\n[SCREEN]\\n${observation.take(4500)}" else "")
-            input = "Continue the original user task. Do not repeat completed actions. If the goal is achieved, finish. [RESULT]\\n$resultText" + if (observation.isNotBlank()) "\\n[SCREEN]\\n${observation.take(4500)}" else ""
+            turns += Msg(false, "[RESULT]\n$resultText" + if (observation.isNotBlank()) "\n[SCREEN]\n${observation.take(4500)}" else "")
+            input = "Continue the original user task. Do not repeat completed actions. If the goal is achieved, finish. [RESULT]\n$resultText" + if (observation.isNotBlank()) "\n[SCREEN]\n${observation.take(4500)}" else ""
             delay(450)
         }
         if (!finished && finalSpoken.isBlank()) finalSpoken = "I stopped because I reached the safe task-step limit."
