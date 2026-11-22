@@ -40,6 +40,7 @@ class Brain(private val ctx: Context) {
 
     fun canUseCloud() =
         !prefs.forceOffline &&
+        !prefs.localOnlyConversation &&
         Dec.isOnline(ctx) &&
         prefs.backendUrl.startsWith("https://") &&
         prefs.apiToken.isNotBlank()
