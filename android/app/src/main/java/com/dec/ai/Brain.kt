@@ -103,11 +103,12 @@ class Brain(private val ctx: Context) {
         fun result(tool: String, args: JSONObject = JSONObject()) =
             BrainResult("", listOf(tool to args), online = false)
 
-        if (Regex("""^(?:please )?(?:can you |could you )?(?:please )?(?:read|show|tell me|describe)(?: me)? (?:what(?:'s| is) )?(?:on )?(?:my |this |the )?screen(?: to me)?$""").matches(command) ||
+        if (Regex("""^(?:please )?(?:can you |could you )?(?:please )?(?:read|see|show|tell me|describe)(?: me)? (?:what(?:'s| is) )?(?:on )?(?:my |this |the )?screen(?: to me)?$""").matches(command) ||
             command in setOf("read screen", "read my screen", "read this screen",
                 "what is on my screen", "what's on my screen", "what is this screen showing",
                 "what does my screen say", "what does this say", "describe this screen",
-                "look at my screen", "inspect my screen")) {
+                "look at my screen", "inspect my screen", "can you see my screen",
+                "what can you see on my screen")) {
             return result("read_screen")
         }
 
@@ -118,9 +119,8 @@ class Brain(private val ctx: Context) {
         Regex("""^(?:please )?(?:scroll|swipe) (up|down)(?: on (?:my |the )?screen)?$""")
             .find(command)?.let { return result("scroll_screen", JSONObject().put("direction", it.groupValues[1])) }
 
-        Regex("""^(?:please )?(?:tap|click|press) (?:on )?(.+)$""")
-            .find(command)?.let { return result("tap_screen", JSONObject().put("label", it.groupValues[1].trim())) }
-
+        // Natural-language taps go to the cloud planner with the current visible
+        // screen context, so DEC can resolve descriptions such as "the blue button".
         Regex("""^(?:please )?(?:type|enter|write) (.+?)(?: on (?:my )?(?:keyboard|screen|text field|message box))?$""")
             .find(command)?.let {
                 val value = it.groupValues[1].trim().trim('"')
@@ -389,7 +389,7 @@ class Brain(private val ctx: Context) {
                     }
                 }
             )
-            .put("device", deviceContext())
+            .put("device", deviceContext(includeScreen = needsScreenContext(text)))
 
         val request = Request.Builder()
             .url(prefs.backendUrl + "/v1/chat")
@@ -428,7 +428,16 @@ class Brain(private val ctx: Context) {
         }
     }
 
-    private fun deviceContext(): JSONObject {
+    private fun needsScreenContext(text: String): Boolean {
+        val command = text.lowercase(Locale.ROOT)
+        return listOf(
+            "screen", "tap", "click", "press", "select", "choose",
+            "button", "icon", "menu", "this page", "this app",
+            "what is open", "what's open", "what can you see"
+        ).any(command::contains)
+    }
+
+    private fun deviceContext(includeScreen: Boolean = false): JSONObject {
 
         val battery = ctx.registerReceiver(
             null,
@@ -493,5 +502,14 @@ class Brain(private val ctx: Context) {
                     status == BatteryManager.BATTERY_STATUS_FULL
             )
             .put("network", network)
+            .put("accessibility_connected", AccessibilityControlService.isConnected())
+            .put(
+                "screen_text",
+                if (includeScreen && AccessibilityControlService.isConnected()) {
+                    AccessibilityControlService.visibleText().take(4500)
+                } else {
+                    ""
+                }
+            )
     }
 }
