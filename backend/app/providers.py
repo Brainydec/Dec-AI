@@ -169,6 +169,23 @@ class Groq(Provider):
                             headers={"Authorization": f"Bearer {settings.groq_key}"},
                         )
 
+            if response.status_code == 429:
+                # Do not immediately retry the same exhausted quota. Let the
+                # orchestrator move to the next configured provider instead.
+                reset_hints = []
+                for header, label in (
+                    ("retry-after", "retry after"),
+                    ("x-ratelimit-reset-requests", "request limit resets in"),
+                    ("x-ratelimit-reset-tokens", "token limit resets in"),
+                ):
+                    value = response.headers.get(header)
+                    if value:
+                        reset_hints.append(f"{label} {value}")
+                hint = f" ({'; '.join(reset_hints)})" if reset_hints else ""
+                raise ProviderError(
+                    f"Groq rate limit reached (429){hint}: {response.text[:350]}"
+                )
+
             if response.status_code != 200:
                 raise ProviderError(
                     f"Groq {response.status_code}: {response.text[:500]}"
