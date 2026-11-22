@@ -166,16 +166,43 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
         val q = name.lowercase().trim()
         if (q.isEmpty()) return "Which app?"
         if (q in setOf("browser", "web browser", "internet", "the browser")) {
-            start(Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_BROWSER)); return ""
+            start(Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_BROWSER))
+            return "Opened your browser."
+        }
+
+        val aliases = when (q) {
+            "wa", "wa business", "whatsapp business", "business whatsapp" ->
+                listOf("com.whatsapp.w4b", "com.whatsapp")
+            "whatsapp", "what's app" -> listOf("com.whatsapp", "com.whatsapp.w4b")
+            else -> emptyList()
         }
         val pm = ctx.packageManager
+
+        // Resolve well-known app package IDs first. This avoids relying on a
+        // localized launcher label such as "WhatsApp Business".
+        for (packageName in aliases) {
+            val launch = pm.getLaunchIntentForPackage(packageName)
+            if (launch != null) {
+                start(launch)
+                return "Opened ${if (packageName == "com.whatsapp.w4b") "WhatsApp Business" else "WhatsApp"}."
+            }
+        }
+
         val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val match = pm.queryIntentActivities(launcher, 0)
-            .firstOrNull { it.loadLabel(pm).toString().lowercase() == q }
-            ?: pm.queryIntentActivities(launcher, 0).firstOrNull { it.loadLabel(pm).toString().lowercase().contains(q) }
-            ?: return "I couldn't find an app called $name."
-        val i = pm.getLaunchIntentForPackage(match.activityInfo.packageName) ?: return "I can't launch $name."
-        start(i); return ""
+        val candidates = pm.queryIntentActivities(launcher, PackageManager.MATCH_ALL)
+        val normalized = q.replace(Regex("[^a-z0-9]"), "")
+        val match = candidates.firstOrNull {
+            it.loadLabel(pm).toString().lowercase().replace(Regex("[^a-z0-9]"), "") == normalized
+        } ?: candidates.firstOrNull {
+            val label = it.loadLabel(pm).toString().lowercase().replace(Regex("[^a-z0-9]"), "")
+            label.contains(normalized) || normalized.contains(label)
+        } ?: return "I couldn't find an installed app matching '$name'. Check that it is installed."
+
+        val packageName = match.activityInfo.packageName
+        val launch = pm.getLaunchIntentForPackage(packageName)
+            ?: return "I found $name, but Android did not provide a launch activity."
+        start(launch)
+        return "Opened ${match.loadLabel(pm)}."
     }
 
     private fun alarm(a: JSONObject): String {
