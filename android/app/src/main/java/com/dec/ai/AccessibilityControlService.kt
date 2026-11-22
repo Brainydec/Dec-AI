@@ -3,6 +3,9 @@ package com.dec.ai
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.os.Bundle
+import android.graphics.Path
+import android.graphics.Rect
+import android.accessibilityservice.GestureDescription
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import java.util.Locale
@@ -55,7 +58,21 @@ class AccessibilityControlService : AccessibilityService() {
                 if (node.performAction(action)) return true
             }
         }
-        return false
+
+        // Fallback for apps whose accessibility tree does not expose a scroll
+        // action but still permits standard touch gestures.
+        val bounds = Rect()
+        val root = roots.firstOrNull() ?: return false
+        root.getBoundsInScreen(bounds)
+        if (bounds.width() < 80 || bounds.height() < 160) return false
+        val x = bounds.centerX().toFloat()
+        val startY = if (direction.equals("up", true)) bounds.bottom * 0.78f else bounds.top + bounds.height() * 0.22f
+        val endY = if (direction.equals("up", true)) bounds.top + bounds.height() * 0.22f else bounds.bottom * 0.78f
+        val path = Path().apply { moveTo(x, startY); lineTo(x, endY) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 420))
+            .build()
+        return dispatchGesture(gesture, null, null)
     }
 
     fun tapText(label: String): Boolean {
