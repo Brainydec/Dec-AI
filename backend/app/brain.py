@@ -19,6 +19,7 @@ accessibility_settings {}
 scroll_screen {"direction": "up"|"down"}
 read_screen {}
 press_back {}
+close_app {}
 tap_screen {"label": "visible control text"}
 type_text {"text": "text for focused field"}
 set_alarm {"hour": 0-23, "minute": 0-59, "message": "label"}
