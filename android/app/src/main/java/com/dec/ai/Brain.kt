@@ -45,7 +45,7 @@ class Brain(private val ctx: Context) {
         prefs.backendUrl.startsWith("https://") &&
         prefs.apiToken.isNotBlank()
 
-    suspend fun ask(text: String, history: List<Msg>): BrainResult =
+    suspend fun ask(text: String, history: List<Msg>, responseMode: String = "voice"): BrainResult =
         withContext(Dispatchers.IO) {
 
             // Requests that depend on understanding the current screen must reach the
@@ -61,7 +61,7 @@ class Brain(private val ctx: Context) {
 
             if (needsScreenContext(text) && canUseCloud()) {
                 try {
-                    return@withContext cloud(text, history)
+                    return@withContext cloud(text, history, responseMode)
                 } catch (e: Exception) {
                     Log.w("DEC", "screen-aware cloud request failed: ${e.message}")
                     Dec.notice.value = "screen analysis unavailable: ${e.message}"
@@ -412,7 +412,8 @@ class Brain(private val ctx: Context) {
 
     private suspend fun cloud(
         text: String,
-        history: List<Msg>
+        history: List<Msg>,
+        responseMode: String
     ): BrainResult {
 
         val body = JSONObject()
@@ -420,6 +421,7 @@ class Brain(private val ctx: Context) {
             .put("session_id", prefs.sessionId)
             .put("personality", prefs.personality)
             .put("custom_instructions", prefs.customInstructions)
+            .put("response_mode", if (responseMode == "text") "text" else "voice")
             .put(
                 "history",
                 JSONArray().also { array ->
