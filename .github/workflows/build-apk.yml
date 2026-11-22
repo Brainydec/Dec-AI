@@ -49,6 +49,22 @@ jobs:
       - name: Build debug APK
         working-directory: android
         run: gradle assembleDebug --no-daemon --stacktrace
+      - name: Explicitly sign APK with V1 and V2 schemes
+        working-directory: android
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          "$APKSIGNER" sign \
+            --ks "$HOME/.android/debug.keystore" \
+            --ks-key-alias androiddebugkey \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --out app/build/outputs/apk/debug/app-debug-v1v2.apk \
+            "$APK"
+          mv app/build/outputs/apk/debug/app-debug-v1v2.apk "$APK"
       - name: Validate APK integrity and signature before publishing
         working-directory: android
         run: |
