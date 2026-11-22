@@ -219,7 +219,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
         "content": req.text,
     })
 
-    last_error = None
+    provider_errors = []
 
     for provider in providers:
         started = time.time()
@@ -261,13 +261,14 @@ async def chat(req: ChatRequest) -> ChatResponse:
             )
 
         except Exception as error:
-            last_error = error
+            provider_errors.append(f"{provider.name}: {error}")
 
             elapsed = int((time.time() - started) * 1000)
 
-            log.exception(
-                "Provider %s failed",
+            log.warning(
+                "Provider %s failed; trying the next configured provider: %s",
                 provider.name,
+                error,
             )
 
             db.log(
@@ -278,5 +279,6 @@ async def chat(req: ChatRequest) -> ChatResponse:
                 str(error),
             )
 
-    raise ProviderError(f"All providers failed: {last_error}")
+    details = " | ".join(provider_errors) or "No configured provider was available."
+    raise ProviderError(f"All providers failed: {details}")
             
