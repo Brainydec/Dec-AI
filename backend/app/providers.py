@@ -138,6 +138,10 @@ class Groq(Provider):
         }
 
         try:
+            # Keep the client open for both the primary request and any fallback.
+            # The previous implementation exited this context before retrying,
+            # which caused httpx to raise "Cannot send a request, as the client
+            # has been closed" instead of contacting the fallback model.
             async with httpx.AsyncClient(timeout=TIMEOUT) as client:
                 response = await client.post(
                     "https://api.groq.com/openai/v1/chat/completions",
@@ -147,24 +151,23 @@ class Groq(Provider):
                     },
                 )
 
-            # Groq's GPT-OSS models can emit an internal Harmony tool call
-            # even though DEC uses prompt-described tools and sends no API tools.
-            # Groq rejects that mismatch with tool_use_failed (HTTP 400).
-            if response.status_code == 400:
-                try:
-                    error_data = response.json().get("error", {})
-                except (ValueError, AttributeError):
-                    error_data = {}
-                fallback = os.environ.get(
-                    "GROQ_FALLBACK_MODEL", "llama-3.3-70b-versatile"
-                ).strip()
-                if should_retry_groq_tool_error(model, error_data, fallback):
-                    retry_body = {**body, "model": fallback}
-                    response = await client.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        json=retry_body,
-                        headers={"Authorization": f"Bearer {settings.groq_key}"},
-                    )
+                # Groq's GPT-OSS models can emit an internal Harmony tool call
+                # even though DEC uses prompt-described tools and sends no API tools.
+                if response.status_code == 400:
+                    try:
+                        error_data = response.json().get("error", {})
+                    except (ValueError, AttributeError):
+                        error_data = {}
+                    fallback = os.environ.get(
+                        "GROQ_FALLBACK_MODEL", "llama-3.3-70b-versatile"
+                    ).strip()
+                    if should_retry_groq_tool_error(model, error_data, fallback):
+                        retry_body = {**body, "model": fallback}
+                        response = await client.post(
+                            "https://api.groq.com/openai/v1/chat/completions",
+                            json=retry_body,
+                            headers={"Authorization": f"Bearer {settings.groq_key}"},
+                        )
 
             if response.status_code != 200:
                 raise ProviderError(
