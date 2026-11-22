@@ -104,6 +104,22 @@ class Gemini(Provider):
         return (await self._call(body)).strip()
 
 
+def should_retry_groq_tool_error(model: str, error_data: dict, fallback: str) -> bool:
+    """Recognise Groq's internal tool-call mismatch and permit one safe model fallback."""
+    if not fallback or fallback == model or not isinstance(error_data, dict):
+        return False
+
+    code = str(error_data.get("code") or "").strip().lower()
+    message = str(error_data.get("message") or "").strip().lower()
+    exact_tool_choice_error = (
+        "tool choice is none" in message and "model called a tool" in message
+    )
+    legacy_gpt_oss_error = (
+        code == "tool_use_failed" and model.startswith("openai/gpt-oss")
+    )
+    return exact_tool_choice_error or legacy_gpt_oss_error
+
+
 class Groq(Provider):
     name = "groq"
 
@@ -142,12 +158,7 @@ class Groq(Provider):
                 fallback = os.environ.get(
                     "GROQ_FALLBACK_MODEL", "llama-3.3-70b-versatile"
                 ).strip()
-                if (
-                    error_data.get("code") == "tool_use_failed"
-                    and model.startswith("openai/gpt-oss")
-                    and fallback
-                    and fallback != model
-                ):
+                if should_retry_groq_tool_error(model, error_data, fallback):
                     retry_body = {**body, "model": fallback}
                     response = await client.post(
                         "https://api.groq.com/openai/v1/chat/completions",
