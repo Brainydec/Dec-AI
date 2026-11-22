@@ -342,8 +342,6 @@ class AccessibilityControlService : AccessibilityService() {
         fun scrollVisible(direction: String) = active?.scroll(direction) ?: false
         fun tapVisibleText(label: String) = active?.tapText(label) ?: false
         fun typeIntoFocusedField(value: String) = active?.typeText(value) ?: false
-        fun back() = active?.pressBack() ?: false
-        fun home() = active?.goHome() ?: false
         fun visibleText() = active?.readScreen().orEmpty()
         suspend fun visualText() = active?.visualText().orEmpty()
     }
