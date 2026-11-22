@@ -18,6 +18,8 @@ class DeviceContext(BaseModel):
     battery_percent: Optional[int] = None
     charging: Optional[bool] = None
     network: Optional[str] = None
+    accessibility_connected: bool = False
+    screen_text: str = Field(default="", max_length=5000)
 
 
 class ChatRequest(BaseModel):
