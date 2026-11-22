@@ -313,22 +313,27 @@ class DecService : Service() {
         }
 
         val outcomes = mutableListOf<String>()
-        for ((tool, args) in response.actions) {
+        for ((index, action) in response.actions.withIndex()) {
             if (stopping || prefs.emergencyStop) break
             Dec.state.value = DecState.THINKING
+            val (tool, args) = action
             val result = executor.run(tool, args, response.online)
             if (result.isNotBlank()) {
                 outcomes += result
-                // A non-empty executor response is a failure, denial, or required
-                // user interaction. Do not continue dependent steps blindly.
-                break
+                // Successful actions often return a confirmation sentence. Continue
+                // the plan unless the executor reports a failure, denial, or asks
+                // the user to complete a step. Never blindly run later steps then.
+                val terminal = Regex(
+                    "(?i)\\b(couldn't|could not|didn't|did not|failed|failure|blocked|not allowed|not sent|won't|will not|cancelled|canceled|permission is missing|need the .* permission|couldn't verify|could not verify|stopped rather than guessing)\\b"
+                ).containsMatchIn(result)
+                if (terminal) break
             }
         }
 
         val spoken = if (outcomes.isNotEmpty()) {
             outcomes.joinToString(" ")
         } else {
-            response.reply
+            response.reply.ifBlank { "The requested actions were executed." }
         }
         if (spoken.isNotBlank()) {
             Dec.addMessage(Msg(false, spoken))
