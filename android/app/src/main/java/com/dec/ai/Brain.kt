@@ -73,7 +73,7 @@ class Brain(private val ctx: Context) {
 
             if (canUseCloud()) {
                 try {
-                    return@withContext cloud(text, history)
+                    return@withContext cloud(text, history, responseMode)
                 } catch (e: Exception) {
                     Log.w("DEC", "cloud failed, using offline: ${e.message}")
                     Dec.notice.value = "cloud failed: ${e.message}"
