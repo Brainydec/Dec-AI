@@ -165,7 +165,7 @@ private fun HomeScreen() {
             )
             Spacer(Modifier.width(8.dp))
             Button(
-                enabled = draft.isNotBlank() && !estop,
+                enabled = draft.isNotBlank() && !estop && state != DecState.THINKING,
                 onClick = {
                     val message = draft.trim()
                     draft = ""
