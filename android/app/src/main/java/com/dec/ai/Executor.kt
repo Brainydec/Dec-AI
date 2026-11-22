@@ -15,6 +15,7 @@ import android.provider.Settings
 import android.telecom.TelecomManager
 import android.telephony.SmsManager
 import org.json.JSONObject
+import kotlinx.coroutines.delay
 
 /**
  * Executes phone actions. EVERY action passes through [guarded], which enforces, in order:
@@ -58,6 +59,13 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
             "volume" -> volume(a)
             "brightness" -> brightness(a.optInt("level", 50))
             "open_app" -> openApp(a.optString("name"))
+            "accessibility_settings" -> accessibilitySettings()
+            "scroll_screen" -> scrollScreen(a.optString("direction", "down"))
+            "read_screen" -> readScreen()
+            "press_back" -> pressBack()
+            "close_app" -> closeApp()
+            "tap_screen" -> tapScreen(a.optString("label"))
+            "type_text" -> typeText(a.optString("text"))
             "set_alarm" -> alarm(a)
             "set_timer" -> timer(a)
             "remember" -> if (prefs.putMemory(a.optString("k"), a.optString("v"))) "" else "I don't store passwords or secrets."
@@ -105,20 +113,112 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
         return ""
     }
 
+    private fun accessibilitySettings(): String {
+        start(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        return "Android Accessibility settings are open. Find DEC AI and switch its service on."
+    }
+
+    private fun requireAccessibility(): Boolean =
+        AccessibilityControlService.isConnected()
+
+    private suspend fun scrollScreen(direction: String): String {
+        if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
+        val normalized = if (direction.equals("up", true)) "up" else "down"
+        val before = AccessibilityControlService.visibleText()
+        val accepted = AccessibilityControlService.scrollVisible(normalized)
+        if (!accepted) return "I couldn't scroll this screen. It may not contain a scrollable area."
+        delay(550)
+        val after = AccessibilityControlService.visibleText()
+        return if (after.isNotBlank() && after != before) {
+            "Verified: the visible screen content changed after scrolling $normalized."
+        } else {
+            "The scroll action was sent, but I couldn't verify that the screen moved."
+        }
+    }
+
+    private fun readScreen(): String {
+        if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
+        val visible = AccessibilityControlService.visibleText()
+        return visible.ifBlank { "I couldn't read any visible text on this screen." }
+    }
+
+    private fun closeApp(): String {
+        if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Enable it in Android Accessibility settings first."
+        return if (AccessibilityControlService.home()) {
+            "Returned to the Home screen. Android does not allow DEC to force-stop another app."
+        } else {
+            "Android did not allow DEC to return to the Home screen."
+        }
+    }
+
+    private fun pressBack(): String {
+        if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
+        return if (AccessibilityControlService.back()) "Went back." else "Android did not allow the Back action."
+    }
+
+    private suspend fun tapScreen(label: String): String {
+        if (label.isBlank()) return "Tell me which visible control to tap."
+        if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
+        if (!confirm("Tap '$label' on the current screen?")) return "Okay, I won't tap it."
+        return if (AccessibilityControlService.tapVisibleText(label)) {
+            "Tapped '$label'."
+        } else {
+            "I couldn't find a tappable control matching '$label'."
+        }
+    }
+
+    private suspend fun typeText(value: String): String {
+        if (value.isBlank()) return "Tell me what text to type."
+        if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
+        if (!confirm("Type this text into the currently focused field: $value")) return "Okay, I won't type it."
+        return if (AccessibilityControlService.typeIntoFocusedField(value)) {
+            "Typed the text into the focused field."
+        } else {
+            "I couldn't type there. Make sure a normal text field is focused; password fields are blocked."
+        }
+    }
+
     private fun openApp(name: String): String {
         val q = name.lowercase().trim()
         if (q.isEmpty()) return "Which app?"
         if (q in setOf("browser", "web browser", "internet", "the browser")) {
-            start(Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_BROWSER)); return ""
+            start(Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_BROWSER))
+            return "Opened your browser."
+        }
+
+        val aliases = when (q) {
+            "wa", "wa business", "whatsapp business", "business whatsapp" ->
+                listOf("com.whatsapp.w4b", "com.whatsapp")
+            "whatsapp", "what's app" -> listOf("com.whatsapp", "com.whatsapp.w4b")
+            else -> emptyList()
         }
         val pm = ctx.packageManager
+
+        // Resolve well-known app package IDs first. This avoids relying on a
+        // localized launcher label such as "WhatsApp Business".
+        for (packageName in aliases) {
+            val launch = pm.getLaunchIntentForPackage(packageName)
+            if (launch != null) {
+                start(launch)
+                return "Opened ${if (packageName == "com.whatsapp.w4b") "WhatsApp Business" else "WhatsApp"}."
+            }
+        }
+
         val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val match = pm.queryIntentActivities(launcher, 0)
-            .firstOrNull { it.loadLabel(pm).toString().lowercase() == q }
-            ?: pm.queryIntentActivities(launcher, 0).firstOrNull { it.loadLabel(pm).toString().lowercase().contains(q) }
-            ?: return "I couldn't find an app called $name."
-        val i = pm.getLaunchIntentForPackage(match.activityInfo.packageName) ?: return "I can't launch $name."
-        start(i); return ""
+        val candidates = pm.queryIntentActivities(launcher, PackageManager.MATCH_ALL)
+        val normalized = q.replace(Regex("[^a-z0-9]"), "")
+        val match = candidates.firstOrNull {
+            it.loadLabel(pm).toString().lowercase().replace(Regex("[^a-z0-9]"), "") == normalized
+        } ?: candidates.firstOrNull {
+            val label = it.loadLabel(pm).toString().lowercase().replace(Regex("[^a-z0-9]"), "")
+            label.contains(normalized) || normalized.contains(label)
+        } ?: return "I couldn't find an installed app matching '$name'. Check that it is installed."
+
+        val packageName = match.activityInfo.packageName
+        val launch = pm.getLaunchIntentForPackage(packageName)
+            ?: return "I found $name, but Android did not provide a launch activity."
+        start(launch)
+        return "Opened ${match.loadLabel(pm)}."
     }
 
     private fun alarm(a: JSONObject): String {

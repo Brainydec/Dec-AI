@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_description">Allows DEC AI to read visible screen text and perform requested scrolling, tapping and typing actions.</string>
+</resources>

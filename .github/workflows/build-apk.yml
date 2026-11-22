@@ -1,10 +1,27 @@
 name: Build DEC APK
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - feature/smart-phone-control
 permissions:
   contents: write
 jobs:
-  build:
+  backend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install backend dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt pytest
+      - name: Run backend tests
+        working-directory: backend
+        run: pytest -q
+  android-build:
+    needs: backend-tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,7 +35,7 @@ jobs:
       - name: Build debug APK
         working-directory: android
         run: gradle assembleDebug --no-daemon --stacktrace
-      - name: Publish APK as a GitHub Release (easy phone download)
+      - name: Publish APK as a GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: apk-${{ github.run_number }}

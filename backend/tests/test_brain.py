@@ -49,3 +49,50 @@ def test_chat_with_fake_provider(monkeypatch):
     monkeypatch.setattr(brain, "chain", lambda: [Fake()])
     r = asyncio.run(brain.chat(ChatRequest(text="flashlight on")))
     assert r.reply == "Turning it on." and r.actions[0].args == {"on": True}
+
+
+def test_accessibility_tools_are_allowlisted():
+    expected = {
+        "accessibility_settings",
+        "scroll_screen",
+        "read_screen",
+        "press_back",
+        "close_app",
+        "tap_screen",
+        "type_text",
+    }
+    assert expected.issubset(brain.KNOWN_TOOLS)
+
+
+def test_accessibility_safety_rules_in_system_prompt():
+    req = ChatRequest(text="scroll down")
+    prompt = brain.build_system(req)
+    assert "never use type_text for passwords" in prompt.lower()
+    assert "user before tapping" in prompt.lower()
+
+
+def test_screen_context_is_available_to_model_and_marked_untrusted():
+    req = ChatRequest(
+        text="What is on my screen?",
+        device={
+            "accessibility_connected": True,
+            "screen_text": "Settings\\nWi-Fi\\nBluetooth",
+        },
+    )
+    prompt = brain.build_system(req)
+    assert "Settings" in prompt
+    assert "Wi-Fi" in prompt
+    assert "untrusted UI text" in prompt
+    assert "Accessibility Service connected" in prompt
+
+
+def test_screen_context_defaults_to_empty():
+    req = ChatRequest(text="hello")
+    assert req.device.screen_text == ""
+    assert req.device.accessibility_connected is False
+
+
+def test_close_app_is_allowlisted():
+    action = brain.clean_actions({"actions": [{"tool": "close_app", "args": {}}]})
+    assert len(action) == 1
+    assert action[0].tool == "close_app"

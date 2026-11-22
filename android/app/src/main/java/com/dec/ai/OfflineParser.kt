@@ -370,6 +370,45 @@ object OfflineParser {
             )
         }
 
+        // ---------------- APP EXIT / HOME ----------------
+
+        if (t in setOf("close app", "close this app", "exit app", "exit this app", "go to home screen", "return to home screen", "go home", "home screen")) {
+            return Plan("", listOf(a("close_app")))
+        }
+
+        // ---------------- ACCESSIBILITY / SCREEN CONTROLS ----------------
+
+        if (t in setOf("open accessibility settings", "enable accessibility", "accessibility settings")) {
+            return Plan("Opening Android Accessibility settings. Find DEC AI and enable its service.", listOf(a("accessibility_settings")))
+        }
+
+        if (t in setOf("read screen", "read my screen", "read this screen", "what is on my screen",
+                "what's on my screen", "what does this say", "what does my screen say",
+                "describe this screen", "look at my screen", "inspect my screen")) {
+            return Plan("", listOf(a("read_screen")))
+        }
+
+        if (t in setOf("go back", "press back", "back", "navigate back", "return to previous screen")) {
+            return Plan("", listOf(a("press_back")))
+        }
+
+        Regex("""^(?:please )?(?:scroll|swipe)(?: the screen)? (up|down)(?: a bit| a little| slightly| on (?:my |the )?screen)?$""").find(t)?.let {
+            return Plan("", listOf(a("scroll_screen", "direction" to it.groupValues[1])))
+        }
+        if (t in setOf("scroll down a bit", "scroll down a little", "swipe up a bit", "swipe down a bit")) {
+            val direction = if (t.contains("up")) "up" else "down"
+            return Plan("", listOf(a("scroll_screen", "direction" to direction)))
+        }
+
+        Regex("""^(?:please )?(?:tap|click|press) (?:on )?(.+)$""").find(t)?.let {
+            return Plan("", listOf(a("tap_screen", "label" to it.groupValues[1])))
+        }
+
+        Regex("""^(?:please )?(?:type|enter|write) (.+?)(?: on (?:my )?(?:keyboard|screen|text field|message box))?$""").find(t)?.let {
+                val value = it.groupValues[1].trim().trim('"')
+            if (value.isNotBlank()) return Plan("", listOf(a("type_text", "text" to value)))
+        }
+
         // ---------------- BATTERY ----------------
 
         if (Regex("""\bbattery\b""").containsMatchIn(t)) {

@@ -46,6 +46,29 @@ class Brain(private val ctx: Context) {
     suspend fun ask(text: String, history: List<Msg>): BrainResult =
         withContext(Dispatchers.IO) {
 
+            // Requests that depend on understanding the current screen must reach the
+            // model with the live visible UI context. Other deterministic device commands
+            // remain local-first for reliability and speed.
+            if (needsScreenContext(text) && !AccessibilityControlService.isConnected()) {
+                return@withContext BrainResult(
+                    "DEC's Accessibility Service is not enabled. I cannot inspect this screen yet. Enable DEC AI in Android Accessibility settings and try again.",
+                    listOf("accessibility_settings" to JSONObject()),
+                    online = false
+                )
+            }
+
+            if (needsScreenContext(text) && canUseCloud()) {
+                try {
+                    return@withContext cloud(text, history)
+                } catch (e: Exception) {
+                    Log.w("DEC", "screen-aware cloud request failed: ${e.message}")
+                    Dec.notice.value = "screen analysis unavailable: ${e.message}"
+                }
+            }
+
+            val local = parseDeviceCommand(text) ?: parseAccessibilityCommand(text)
+            if (local != null) return@withContext local
+
             if (canUseCloud()) {
                 try {
                     return@withContext cloud(text, history)
@@ -83,6 +106,49 @@ class Brain(private val ctx: Context) {
             actions = plan.actions,
             online = false
         )
+    }
+
+    /**
+     * Handles common screen-control wording locally, before cloud interpretation.
+     */
+    private fun parseAccessibilityCommand(text: String): BrainResult? {
+        val command = text.lowercase(Locale.ROOT)
+            .replace(Regex("[,!?]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        if (command.isBlank()) return null
+
+        fun result(tool: String, args: JSONObject = JSONObject()) =
+            BrainResult("", listOf(tool to args), online = false)
+
+        if (Regex("""^(?:please )?(?:can you |could you )?(?:please )?(?:read|see|show|tell me|describe)(?: me)? (?:what(?:'s| is) )?(?:on )?(?:my |this |the )?screen(?: to me)?$""").matches(command) ||
+            command in setOf("read screen", "read my screen", "read this screen",
+                "what is on my screen", "what's on my screen", "what is this screen showing",
+                "what does my screen say", "what does this say", "describe this screen",
+                "look at my screen", "inspect my screen", "can you see my screen",
+                "what can you see on my screen")) {
+            return result("read_screen")
+        }
+
+        if (command in setOf("go back", "press back", "back", "navigate back", "return to previous screen")) {
+            return result("press_back")
+        }
+
+        Regex("""^(?:please )?(?:scroll|swipe) (up|down)(?: on (?:my |the )?screen)?$""")
+            .find(command)?.let { return result("scroll_screen", JSONObject().put("direction", it.groupValues[1])) }
+
+        // Natural-language taps go to the cloud planner with the current visible
+        // screen context, so DEC can resolve descriptions such as "the blue button".
+        Regex("""^(?:please )?(?:type|enter|write) (.+?)(?: on (?:my )?(?:keyboard|screen|text field|message box))?$""")
+            .find(command)?.let {
+                val value = it.groupValues[1].trim().trim('"')
+                if (value.isNotBlank()) return result("type_text", JSONObject().put("text", value))
+            }
+
+        if (command in setOf("open accessibility settings", "accessibility settings", "enable accessibility")) {
+            return result("accessibility_settings")
+        }
+        return null
     }
 
     /**
@@ -341,7 +407,7 @@ class Brain(private val ctx: Context) {
                     }
                 }
             )
-            .put("device", deviceContext())
+            .put("device", deviceContext(includeScreen = needsScreenContext(text)))
 
         val request = Request.Builder()
             .url(prefs.backendUrl + "/v1/chat")
@@ -380,7 +446,16 @@ class Brain(private val ctx: Context) {
         }
     }
 
-    private fun deviceContext(): JSONObject {
+    private fun needsScreenContext(text: String): Boolean {
+        val command = text.lowercase(Locale.ROOT)
+        return listOf(
+            "screen", "tap", "click", "press", "select", "choose",
+            "button", "icon", "menu", "this page", "this app",
+            "what is open", "what's open", "what can you see"
+        ).any(command::contains)
+    }
+
+    private fun deviceContext(includeScreen: Boolean = false): JSONObject {
 
         val battery = ctx.registerReceiver(
             null,
@@ -445,5 +520,14 @@ class Brain(private val ctx: Context) {
                     status == BatteryManager.BATTERY_STATUS_FULL
             )
             .put("network", network)
+            .put("accessibility_connected", AccessibilityControlService.isConnected())
+            .put(
+                "screen_text",
+                if (includeScreen && AccessibilityControlService.isConnected()) {
+                    AccessibilityControlService.visibleText().take(4500)
+                } else {
+                    ""
+                }
+            )
     }
 }
