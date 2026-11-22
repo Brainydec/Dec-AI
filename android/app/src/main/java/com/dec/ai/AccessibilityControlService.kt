@@ -90,6 +90,9 @@ class AccessibilityControlService : AccessibilityService() {
 
     fun pressBack(): Boolean = performGlobalAction(GLOBAL_ACTION_BACK)
 
+    /** Leaves the foreground app and returns to the Android launcher. */
+    fun goHome(): Boolean = performGlobalAction(GLOBAL_ACTION_HOME)
+
     fun readScreen(): String {
         val lines = linkedSetOf<String>()
         for (root in visibleRoots()) {
@@ -166,6 +169,7 @@ class AccessibilityControlService : AccessibilityService() {
         fun tapVisibleText(label: String) = active?.tapText(label) ?: false
         fun typeIntoFocusedField(value: String) = active?.typeText(value) ?: false
         fun back() = active?.pressBack() ?: false
+        fun home() = active?.goHome() ?: false
         fun visibleText() = active?.readScreen().orEmpty()
     }
 }
