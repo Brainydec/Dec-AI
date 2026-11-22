@@ -16,6 +16,7 @@ enum class Tool(
     SCROLL_SCREEN("scroll_screen", "Screen scrolling", Cat.A, "Scroll the currently visible screen."),
     READ_SCREEN("read_screen", "Read screen", Cat.A, "Read visible, non-password screen text."),
     PRESS_BACK("press_back", "Back navigation", Cat.A, "Press Android Back."),
+    CLOSE_APP("close_app", "Return Home", Cat.A, "Leave the foreground app and return to the Android Home screen; cannot force-stop apps."),
     TAP_SCREEN("tap_screen", "Tap screen", Cat.B, "Tap a named visible control. Always asks first."),
     TYPE_TEXT("type_text", "Type text", Cat.B, "Type into the currently focused field. Always asks first."),
     SET_ALARM("set_alarm", "Alarms", Cat.A, "Create alarms in your clock app."),
