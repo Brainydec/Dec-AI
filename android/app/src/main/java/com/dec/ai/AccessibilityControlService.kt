@@ -25,8 +25,11 @@ import java.util.Locale
  */
 class AccessibilityControlService : AccessibilityService() {
 
+    private var connectionSessionId: Long = 0L
+
     override fun onServiceConnected() {
         super.onServiceConnected()
+        connectionSessionId = nextConnectionId.incrementAndGet()
         serviceInfo = serviceInfo.apply {
             eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
                 AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
@@ -358,9 +361,12 @@ class AccessibilityControlService : AccessibilityService() {
     }
 
     companion object {
+        private val nextConnectionId = java.util.concurrent.atomic.AtomicLong(0L)
         @Volatile private var active: AccessibilityControlService? = null
 
         fun isConnected(): Boolean = active != null
+        /** Changes whenever Android reconnects the user-enabled Accessibility Service. */
+        fun currentConnectionSessionId(): Long? = active?.connectionSessionId
         fun home() = active?.pressHome() ?: false
         fun back() = active?.pressBack() ?: false
         fun recents() = active?.openRecents() ?: false
