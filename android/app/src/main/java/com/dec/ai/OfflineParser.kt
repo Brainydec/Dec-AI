@@ -395,7 +395,7 @@ object OfflineParser {
         }
 
         Regex("""^(?:please )?(?:type|enter|write) (.+?)(?: on (?:my )?(?:keyboard|screen|text field|message box))?$""").find(t)?.let {
-            val value = it.groupValues[1].trim().trim('"', '\\'')
+                val value = it.groupValues[1].trim().trim('"')
             if (value.isNotBlank()) return Plan("", listOf(a("type_text", "text" to value)))
         }
 
