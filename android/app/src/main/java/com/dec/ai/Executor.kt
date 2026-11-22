@@ -15,6 +15,7 @@ import android.provider.Settings
 import android.telecom.TelecomManager
 import android.telephony.SmsManager
 import org.json.JSONObject
+import kotlinx.coroutines.delay
 
 /**
  * Executes phone actions. EVERY action passes through [guarded], which enforces, in order:
@@ -120,13 +121,18 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
     private fun requireAccessibility(): Boolean =
         AccessibilityControlService.isConnected()
 
-    private fun scrollScreen(direction: String): String {
+    private suspend fun scrollScreen(direction: String): String {
         if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
         val normalized = if (direction.equals("up", true)) "up" else "down"
-        return if (AccessibilityControlService.scrollVisible(normalized)) {
-            "Scrolled $normalized."
+        val before = AccessibilityControlService.visibleText()
+        val accepted = AccessibilityControlService.scrollVisible(normalized)
+        if (!accepted) return "I couldn't scroll this screen. It may not contain a scrollable area."
+        delay(550)
+        val after = AccessibilityControlService.visibleText()
+        return if (after.isNotBlank() && after != before) {
+            "Verified: the visible screen content changed after scrolling $normalized."
         } else {
-            "I couldn't scroll this screen. It may not contain a scrollable area."
+            "The scroll action was sent, but I couldn't verify that the screen moved."
         }
     }
 
