@@ -61,9 +61,15 @@ def test_groq_complete_json_retries_exact_tool_choice_error(monkeypatch):
             return self
 
         async def __aexit__(self, *args):
+            self.closed = True
             return False
 
+        def __init__(self):
+            self.closed = False
+
         async def post(self, url, json, headers):
+            if self.closed:
+                raise RuntimeError("Cannot send a request, as the client has been closed.")
             self.calls.append(json["model"])
             if len(self.calls) == 1:
                 return Response(
