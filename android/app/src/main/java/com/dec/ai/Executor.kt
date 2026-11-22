@@ -148,11 +148,24 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
         delay(700)
         val after = listOf(AccessibilityControlService.visibleText(), AccessibilityControlService.visualText())
             .filter { it.isNotBlank() }.joinToString(". ")
-        return if (after.isNotBlank() && after != before) {
-            "Verified: the visible screen content changed after scrolling $normalized."
-        } else {
-            "The scroll gesture was sent, but screen movement could not be verified. I stopped rather than guessing."
+        if (after.isNotBlank() && after != before) {
+            return "Verified: the visible screen content changed after scrolling $normalized."
         }
+
+        // Some apps acknowledge ACTION_SCROLL without actually moving. Try one
+        // real swipe, then observe again; never claim success from dispatch alone.
+        val fallbackSent = AccessibilityControlService.scrollByGesture(normalized)
+        if (fallbackSent) {
+            delay(800)
+            val fallbackAfter = listOf(
+                AccessibilityControlService.visibleText(),
+                AccessibilityControlService.visualText()
+            ).filter { it.isNotBlank() }.joinToString(". ")
+            if (fallbackAfter.isNotBlank() && fallbackAfter != before) {
+                return "Verified: the screen moved after a swipe fallback."
+            }
+        }
+        return "I tried the scroll action and a swipe, but could not verify screen movement. I stopped rather than guessing."
     }
 
     private suspend fun readScreen(): String {
