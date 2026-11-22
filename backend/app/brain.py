@@ -210,7 +210,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
             else "user",
             "content": item.content,
         }
-        for item in req.history[-8:]
+        for item in req.history[-24:]
     ]
 
     messages.append({
