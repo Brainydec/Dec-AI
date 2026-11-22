@@ -53,6 +53,15 @@ class Prefs private constructor(ctx: Context) {
     fun offlineAllowed(t: Tool) = sp.getBoolean("off_${t.id}", true)
     fun setOfflineAllowed(t: Tool, on: Boolean) = sp.edit().putBoolean("off_${t.id}", on).apply()
 
+    // Screen-control approval is revocable from the Permissions screen.
+    var screenApprovalEpoch: Int
+        get() = sp.getInt("screenApprovalEpoch", 0)
+        private set(v) = sp.edit().putInt("screenApprovalEpoch", v).apply()
+
+    fun revokeScreenApproval() {
+        screenApprovalEpoch = screenApprovalEpoch + 1
+    }
+
     // ---- memories ----
     data class Mem(val k: String, val v: String)
     fun memories(): List<Mem> {
