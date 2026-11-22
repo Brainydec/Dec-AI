@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.graphics.Path
 import android.graphics.Bitmap
 import android.view.Display
+import android.util.Log
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
@@ -33,7 +34,9 @@ class AccessibilityControlService : AccessibilityService() {
                 AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED or
                 AccessibilityEvent.TYPE_WINDOWS_CHANGED
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-            flags = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
+            // Preserve flags/capabilities declared in accessibility_service_config.xml.
+            flags = flags or
+                AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
                 AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
                 AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
             notificationTimeout = 100
@@ -223,6 +226,8 @@ class AccessibilityControlService : AccessibilityService() {
                             } catch (_: Exception) { null }
                             result.hardwareBuffer.close()
                             if (bitmap == null) {
+                                Log.e("DEC-Screen", "Screenshot returned no bitmap")
+                                Dec.notice.value = "Screen capture returned no image. Check DEC Accessibility permission."
                                 if (continuation.isActive) continuation.resume("")
                                 return
                             }
@@ -233,7 +238,9 @@ class AccessibilityControlService : AccessibilityService() {
                                         text.textBlocks.joinToString(". ") { it.text }.take(3500)
                                     )
                                 }
-                                .addOnFailureListener {
+                                .addOnFailureListener { error ->
+                                    Log.e("DEC-Screen", "On-device OCR failed", error)
+                                    Dec.notice.value = "Screen image captured, but OCR failed: ${error.message ?: "unknown error"}"
                                     if (continuation.isActive) continuation.resume("")
                                 }
                                 .addOnCompleteListener {
@@ -243,10 +250,14 @@ class AccessibilityControlService : AccessibilityService() {
                         }
 
                         override fun onFailure(errorCode: Int) {
+                            Log.e("DEC-Screen", "Android screenshot failed with code $errorCode")
+                            Dec.notice.value = "Android refused screen capture (error $errorCode). Check DEC Accessibility permission and whether this screen is protected."
                             if (continuation.isActive) continuation.resume("")
                         }
                     })
-            } catch (_: Exception) {
+            } catch (error: Exception) {
+                Log.e("DEC-Screen", "Could not request screenshot", error)
+                Dec.notice.value = "Could not capture screen: ${error.message ?: "unknown error"}"
                 if (continuation.isActive) continuation.resume("")
             }
         }
