@@ -111,8 +111,9 @@ class Groq(Provider):
         return bool(settings.groq_key)
 
     async def complete_json(self, system, messages):
+        model = settings.groq_model
         body = {
-            "model": settings.groq_model,
+            "model": model,
             "messages": [
                 {"role": "system", "content": system},
                 *messages,
