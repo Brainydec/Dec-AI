@@ -62,6 +62,7 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
             "scroll_screen" -> scrollScreen(a.optString("direction", "down"))
             "read_screen" -> readScreen()
             "press_back" -> pressBack()
+            "close_app" -> closeApp()
             "tap_screen" -> tapScreen(a.optString("label"))
             "type_text" -> typeText(a.optString("text"))
             "set_alarm" -> alarm(a)
@@ -133,6 +134,15 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
         if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
         val visible = AccessibilityControlService.visibleText()
         return visible.ifBlank { "I couldn't read any visible text on this screen." }
+    }
+
+    private fun closeApp(): String {
+        if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Enable it in Android Accessibility settings first."
+        return if (AccessibilityControlService.home()) {
+            "Returned to the Home screen. Android does not allow DEC to force-stop another app."
+        } else {
+            "Android did not allow DEC to return to the Home screen."
+        }
     }
 
     private fun pressBack(): String {
