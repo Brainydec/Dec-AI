@@ -144,6 +144,11 @@ class DecService : Service() {
                             stopSelf()
                         }
                     }
+                } else {
+                    textInteraction = false
+                    Dec.wakeActive.value = false
+                    Dec.state.value = DecState.OFF
+                    stopSelf()
                 }
             }
 
