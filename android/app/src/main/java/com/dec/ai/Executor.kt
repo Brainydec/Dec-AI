@@ -26,7 +26,9 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
     private var screenApproved = false
     private val sensitiveApp = Regex("(?i)bank|wallet|pay|upi|phonepe|paytm|authenticator|keepass|bitwarden|1password|lastpass|password|vault")
     private val riskyTap = Regex("(?i)\\b(pay|send|transfer|buy|purchase|order|checkout|delete|remove|erase|uninstall|reset|sign out|log ?out|confirm|submit|donate|subscribe|install)\\b")
-    fun newTask() { screenApproved = false }
+    // Screen approval remains valid for this running DEC service session.
+    // It resets only when Android restarts the service or the user stops DEC.
+    fun newTask() = Unit
     private fun sensitiveScreen(): Boolean = AccessibilityControlService.foregroundPackage()?.let { sensitiveApp.containsMatchIn(it) } == true
     suspend fun takeObservation(): String {
         if (!requireAccessibility()) return ""
