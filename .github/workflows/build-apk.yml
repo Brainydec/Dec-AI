@@ -52,6 +52,7 @@ jobs:
       - name: Validate APK integrity and signature before publishing
         working-directory: android
         run: |
+          set -euo pipefail
           APK=app/build/outputs/apk/debug/app-debug.apk
           test -s "$APK"
           unzip -t "$APK"
@@ -89,13 +90,7 @@ jobs:
             "$ZIPALIGN" -c -v 4 "$APK"
             echo
             echo "=== Native libraries / ABIs ==="
-            unzip -Z1 "$APK" | grep -E '^lib/[^/]+/[^/]+\\.so        if: github.event_name != 'pull_request'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: apk-${{ github.run_number }}
-          name: DEC AI build ${{ github.run_number }}
-          files: android/app/build/outputs/apk/debug/app-debug.apk
- | sort || true
+            unzip -Z1 "$APK" | grep -E '^lib/[^/]+/[^/]+[.]so$' | sort || true
             echo
             echo "=== Signature ==="
             APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
