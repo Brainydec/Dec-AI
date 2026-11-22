@@ -12,6 +12,9 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import android.graphics.Rect
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 import android.accessibilityservice.GestureDescription
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -123,7 +126,86 @@ class AccessibilityControlService : AccessibilityService() {
     }
 
     fun pressBack(): Boolean = performGlobalAction(GLOBAL_ACTION_BACK)
+    fun pressHome(): Boolean = performGlobalAction(GLOBAL_ACTION_HOME)
+    fun openRecents(): Boolean = performGlobalAction(GLOBAL_ACTION_RECENTS)
+    fun foregroundPackage(): String? = rootInActiveWindow?.packageName?.toString()
+    fun appLabel(packageName: String): String = runCatching {
+        packageManager.getApplicationLabel(packageManager.getApplicationInfo(packageName, 0)).toString()
+    }.getOrDefault(packageName)
 
+    /** Best-effort dismissal of a matching app card from Android Recents; this is not force-stop. */
+    suspend fun dismissRecentsCard(label: String): Boolean {
+        if (!openRecents()) return false
+        delay(900)
+        val root = rootInActiveWindow
+        val hits = runCatching { root?.findAccessibilityNodeInfosByText(label) }.getOrNull().orEmpty()
+        var bounds: Rect? = null
+        val screenHeight = resources.displayMetrics.heightPixels
+        for (hit in hits) {
+            var node: AccessibilityNodeInfo? = hit
+            var depth = 0
+            val rect = Rect()
+            while (node != null && depth < 8) {
+                node.getBoundsInScreen(rect)
+                if (rect.height() >= screenHeight * 0.3f) { bounds = Rect(rect); break }
+                node = node.parent
+                depth++
+            }
+            if (bounds != null) break
+        }
+        val r = bounds
+        val dismissed = if (r == null) false else performSwipe(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), (r.top - r.height() * 0.45f).coerceAtLeast(4), 220)
+        delay(350)
+        pressHome()
+        return dismissed
+    }
+
+    /** Clears Recents only when Android exposes a recognizable Clear all control. */
+    suspend fun clearRecents(): Boolean {
+        if (!openRecents()) return false
+        delay(900)
+        val root = rootInActiveWindow ?: run { pressHome(); return false }
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        var target: AccessibilityNodeInfo? = null
+        var visited = 0
+        while (queue.isNotEmpty() && visited++ < 500 && target == null) {
+            val node = queue.removeFirst()
+            val text = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim().lowercase()
+            val viewId = node.viewIdResourceName?.lowercase().orEmpty()
+            if (viewId.contains("clear") || text == "clear all" || text == "close all" || text == "dismiss all") target = node
+            else for (index in 0 until node.childCount) node.getChild(index)?.let(queue::addLast)
+        }
+        val success = target?.let { clickNode(it) } ?: false
+        delay(350)
+        pressHome()
+        return success
+    }
+
+    private suspend fun clickNode(node: AccessibilityNodeInfo): Boolean {
+        var current: AccessibilityNodeInfo? = node
+        var depth = 0
+        while (current != null && depth++ < 6) {
+            if (current.isClickable && current.isEnabled && current.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+            current = current.parent
+        }
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        return if (rect.isEmpty) false else performTap(rect.exactCenterX(), rect.exactCenterY())
+    }
+
+    private suspend fun performTap(x: Float, y: Float): Boolean = performGesture(Path().apply { moveTo(x, y) }, 70)
+    private suspend fun performSwipe(x1: Float, y1: Float, x2: Float, y2: Float, duration: Long): Boolean =
+        performGesture(Path().apply { moveTo(x1, y1); lineTo(x2, y2) }, duration)
+
+    private suspend fun performGesture(path: Path, duration: Long): Boolean = suspendCancellableCoroutine { continuation ->
+        val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, duration)).build()
+        val sent = dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(description: GestureDescription?) { if (continuation.isActive) continuation.resume(true) }
+            override fun onCancelled(description: GestureDescription?) { if (continuation.isActive) continuation.resume(false) }
+        }, null)
+        if (!sent && continuation.isActive) continuation.resume(false)
+    }
     /** Leaves the foreground app and returns to the Android launcher. */
     fun goHome(): Boolean = performGlobalAction(GLOBAL_ACTION_HOME)
 
@@ -250,6 +332,13 @@ class AccessibilityControlService : AccessibilityService() {
         @Volatile private var active: AccessibilityControlService? = null
 
         fun isConnected(): Boolean = active != null
+        fun home() = active?.pressHome() ?: false
+        fun back() = active?.pressBack() ?: false
+        fun recents() = active?.openRecents() ?: false
+        fun foregroundPackage() = active?.foregroundPackage()
+        fun appLabel(packageName: String) = active?.appLabel(packageName) ?: packageName
+        suspend fun dismissRecentsCard(label: String) = active?.dismissRecentsCard(label) ?: false
+        suspend fun clearRecents() = active?.clearRecents() ?: false
         fun scrollVisible(direction: String) = active?.scroll(direction) ?: false
         fun tapVisibleText(label: String) = active?.tapText(label) ?: false
         fun typeIntoFocusedField(value: String) = active?.typeText(value) ?: false
