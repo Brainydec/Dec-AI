@@ -49,7 +49,7 @@ class AccessibilityControlService : AccessibilityService() {
         super.onDestroy()
     }
 
-    fun scroll(direction: String): Boolean {
+    suspend fun scroll(direction: String): Boolean {
         val roots = visibleRoots()
         if (roots.isEmpty()) return false
         val action = if (direction.equals("up", true)) {
@@ -77,10 +77,9 @@ class AccessibilityControlService : AccessibilityService() {
         val startY = if (direction.equals("up", true)) bounds.bottom * 0.78f else bounds.top + bounds.height() * 0.22f
         val endY = if (direction.equals("up", true)) bounds.top + bounds.height() * 0.22f else bounds.bottom * 0.78f
         val path = Path().apply { moveTo(x, startY); lineTo(x, endY) }
-        val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, 420))
-            .build()
-        return dispatchGesture(gesture, null, null)
+        // Wait for Android's gesture callback. dispatchGesture() returning true
+        // only means it was queued, not that the swipe actually completed.
+        return performGesture(path, 520)
     }
 
     fun tapText(label: String): Boolean {
@@ -337,7 +336,7 @@ class AccessibilityControlService : AccessibilityService() {
         fun appLabel(packageName: String) = active?.appLabel(packageName) ?: packageName
         suspend fun dismissRecentsCard(label: String) = active?.dismissRecentsCard(label) ?: false
         suspend fun clearRecents() = active?.clearRecents() ?: false
-        fun scrollVisible(direction: String) = active?.scroll(direction) ?: false
+        suspend fun scrollVisible(direction: String) = active?.scroll(direction) ?: false
         fun tapVisibleText(label: String) = active?.tapText(label) ?: false
         fun typeIntoFocusedField(value: String) = active?.typeText(value) ?: false
         fun visibleText() = active?.readScreen().orEmpty()
