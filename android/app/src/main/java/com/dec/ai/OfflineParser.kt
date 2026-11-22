@@ -392,8 +392,12 @@ object OfflineParser {
             return Plan("", listOf(a("press_back")))
         }
 
-        Regex("""^(?:please )?(?:scroll|swipe) (up|down)(?: on (?:my |the )?screen)?$""").find(t)?.let {
+        Regex("""^(?:please )?(?:scroll|swipe)(?: the screen)? (up|down)(?: a bit| a little| slightly| on (?:my |the )?screen)?$""").find(t)?.let {
             return Plan("", listOf(a("scroll_screen", "direction" to it.groupValues[1])))
+        }
+        if (t in setOf("scroll down a bit", "scroll down a little", "swipe up a bit", "swipe down a bit")) {
+            val direction = if (t.contains("up")) "up" else "down"
+            return Plan("", listOf(a("scroll_screen", "direction" to direction)))
         }
 
         Regex("""^(?:please )?(?:tap|click|press) (?:on )?(.+)$""").find(t)?.let {
