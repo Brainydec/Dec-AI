@@ -319,6 +319,28 @@ private fun PermsScreen() {
                     }
                 }
             }
+            Card(colors = CardDefaults.cardColors(containerColor = Surface0)) {
+                Column(Modifier.padding(12.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Screen reading and control", fontWeight = FontWeight.Bold)
+                    Text(
+                        "DEC asks before first screen access in each Accessibility Service session. Android turning this service off and back on also resets approval.",
+                        fontSize = 12.sp,
+                        color = Muted
+                    )
+                    OutlinedButton(
+                        onClick = { prefs.revokeScreenApproval(); bump++ },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("REVOKE SCREEN ACCESS APPROVAL") }
+                    Text(
+                        "To revoke Android's underlying access completely, turn DEC AI off in Android Accessibility settings.",
+                        fontSize = 11.sp,
+                        color = Muted
+                    )
+                    TextButton(onClick = { open(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) {
+                        Text("Open Accessibility settings")
+                    }
+                }
+            }
             Text("System access", fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
             SpecialRow("Modify system settings (brightness)", Settings.System.canWrite(ctx)) {
                 open(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:${ctx.packageName}")))
