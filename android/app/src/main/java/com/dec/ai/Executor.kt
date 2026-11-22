@@ -23,11 +23,12 @@ import kotlinx.coroutines.delay
  */
 class Executor(private val ctx: Context, private val confirm: suspend (String) -> Boolean) {
     private val prefs = Prefs.get(ctx)
-    private var screenApproved = false
+    private var screenApprovalEpoch: Int? = null
+    private var screenApprovalConnectionId: Long? = null
     private val sensitiveApp = Regex("(?i)bank|wallet|pay|upi|phonepe|paytm|authenticator|keepass|bitwarden|1password|lastpass|password|vault")
     private val riskyTap = Regex("(?i)\\b(pay|send|transfer|buy|purchase|order|checkout|delete|remove|erase|uninstall|reset|sign out|log ?out|confirm|submit|donate|subscribe|install)\\b")
-    // Screen approval remains valid for this running DEC service session.
-    // It resets only when Android restarts the service or the user stops DEC.
+    // Approval is bound to both the user's revocation epoch and the current
+    // Android Accessibility Service connection. Disconnect/reconnect invalidates it.
     fun newTask() = Unit
     private fun sensitiveScreen(): Boolean = AccessibilityControlService.foregroundPackage()?.let { sensitiveApp.containsMatchIn(it) } == true
     suspend fun takeObservation(): String {
@@ -202,9 +203,19 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
     }
 
     private suspend fun approveScreenOnce(): Boolean {
-        if (screenApproved) return true
+        val connectionId = AccessibilityControlService.currentConnectionSessionId() ?: return false
+        val epoch = prefs.screenApprovalEpoch
+        if (screenApprovalEpoch == epoch && screenApprovalConnectionId == connectionId) return true
+
         if (!confirm("May I read and control the visible screen to complete this task?")) return false
-        screenApproved = true
+
+        // Do not carry approval across a disconnect or an explicit revoke while
+        // the confirmation dialog/voice prompt was waiting for the user.
+        if (AccessibilityControlService.currentConnectionSessionId() != connectionId ||
+            prefs.screenApprovalEpoch != epoch) return false
+
+        screenApprovalEpoch = epoch
+        screenApprovalConnectionId = connectionId
         return true
     }
 
