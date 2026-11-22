@@ -88,3 +88,41 @@ def test_groq_complete_json_retries_exact_tool_choice_error(monkeypatch):
 
     assert result == '{"reply":"ok","actions":[]}'
     assert Client.calls == ["openai/gpt-oss-20b", "llama-3.3-70b-versatile"]
+
+
+def test_groq_429_reports_rate_limit_reset_without_retry(monkeypatch):
+    import app.providers as providers
+
+    monkeypatch.setattr(providers.settings, "groq_key", "test-key")
+    monkeypatch.setattr(providers.settings, "groq_model", "openai/gpt-oss-20b")
+
+    class Response:
+        status_code = 429
+        text = '{"error":{"message":"rate limit reached"}}'
+        headers = {
+            "retry-after": "30",
+            "x-ratelimit-reset-requests": "30s",
+        }
+
+    class Client:
+        calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, *args, **kwargs):
+            self.calls += 1
+            return Response()
+
+    monkeypatch.setattr(providers.httpx, "AsyncClient", lambda **kwargs: Client())
+
+    try:
+        asyncio.run(Groq().complete_json("system", [{"role": "user", "content": "hi"}]))
+    except providers.ProviderError as error:
+        assert "Groq rate limit reached (429)" in str(error)
+        assert "retry after 30" in str(error)
+    else:
+        raise AssertionError("Expected a Groq rate-limit error")
