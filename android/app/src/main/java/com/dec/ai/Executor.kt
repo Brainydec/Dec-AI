@@ -164,10 +164,18 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
         if (label.isBlank()) return "Tell me which visible control to tap."
         if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
         if (!confirm("Tap '$label' on the current screen?")) return "Okay, I won't tap it."
-        return if (AccessibilityControlService.tapVisibleText(label)) {
-            "Tapped '$label'."
+        val before = listOf(AccessibilityControlService.visibleText(), AccessibilityControlService.visualText())
+            .filter { it.isNotBlank() }.joinToString(". ")
+        if (!AccessibilityControlService.tapVisibleText(label)) {
+            return "I couldn't find a tappable control matching '$label'."
+        }
+        delay(650)
+        val after = listOf(AccessibilityControlService.visibleText(), AccessibilityControlService.visualText())
+            .filter { it.isNotBlank() }.joinToString(". ")
+        return if (after.isNotBlank() && after != before) {
+            "Tapped '$label' and verified that the visible screen changed."
         } else {
-            "I couldn't find a tappable control matching '$label'."
+            "The tap on '$label' was accepted, but I couldn't verify a screen change. I stopped rather than assuming it worked."
         }
     }
 
