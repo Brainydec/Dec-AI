@@ -121,12 +121,15 @@ class DecService : Service() {
             ACTION_TEXT -> {
                 val text = intent.getStringExtra(EXTRA_TEXT).orEmpty().trim()
                 if (text.isNotBlank() && !stopping && !prefs.emergencyStop) {
-                    job?.cancel()
+                    textInteraction = true
+                    val previous = job
+                    previous?.cancel()
                     wake.stop()
                     Dec.wakeActive.value = false
                     job = scope.launch {
-                        textInteraction = true
                         try {
+                            previous?.join()
+                            wake.stop()
                             handle(text, speakReply = false)
                         } finally {
                             textInteraction = false
@@ -206,7 +209,7 @@ class DecService : Service() {
 
         Dec.level.value = 0f
 
-        if (stopping || prefs.emergencyStop) {
+        if (stopping || prefs.emergencyStop || textInteraction) {
             wake.stop()
             Dec.wakeActive.value = false
             Dec.state.value = DecState.OFF
