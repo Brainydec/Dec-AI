@@ -89,6 +89,17 @@ jobs:
           test -n "$APKSIGNER"
           "$APKSIGNER" verify --verbose --print-certs "$APK"
           sha256sum "$APK"
+      - name: Test installation on Android 15 emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          profile: pixel_2
+          script: |
+            adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+            adb shell pm path com.dec.ai
+            adb shell dumpsys package com.dec.ai | grep -E 'versionName|versionCode|targetSdk'
       - name: Generate Android install compatibility diagnostics
         if: always()
         working-directory: android
