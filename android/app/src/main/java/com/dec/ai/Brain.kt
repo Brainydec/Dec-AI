@@ -49,6 +49,14 @@ class Brain(private val ctx: Context) {
             // Requests that depend on understanding the current screen must reach the
             // model with the live visible UI context. Other deterministic device commands
             // remain local-first for reliability and speed.
+            if (needsScreenContext(text) && !AccessibilityControlService.isConnected()) {
+                return@withContext BrainResult(
+                    "DEC's Accessibility Service is not enabled. I cannot inspect this screen yet. Enable DEC AI in Android Accessibility settings and try again.",
+                    listOf("accessibility_settings" to JSONObject()),
+                    online = false
+                )
+            }
+
             if (needsScreenContext(text) && canUseCloud()) {
                 try {
                     return@withContext cloud(text, history)
