@@ -370,7 +370,7 @@ class Brain(private val ctx: Context) {
         return null
     }
 
-    private fun cloud(
+    private suspend fun cloud(
         text: String,
         history: List<Msg>
     ): BrainResult {
@@ -455,7 +455,7 @@ class Brain(private val ctx: Context) {
         ).any(command::contains)
     }
 
-    private fun deviceContext(includeScreen: Boolean = false): JSONObject {
+    private suspend fun deviceContext(includeScreen: Boolean = false): JSONObject {
 
         val battery = ctx.registerReceiver(
             null,
