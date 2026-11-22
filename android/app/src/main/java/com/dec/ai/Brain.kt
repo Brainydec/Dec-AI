@@ -95,6 +95,15 @@ class Brain(private val ctx: Context) {
             return deviceCommand
         }
 
+        val localReply = localConversationReply(text)
+        if (localReply != null) {
+            return BrainResult(
+                reply = localReply,
+                actions = emptyList(),
+                online = false
+            )
+        }
+
         val plan = OfflineParser.parse(text, prefs)
 
         val reply = if (plan.reply == "__battery__") {
@@ -108,6 +117,35 @@ class Brain(private val ctx: Context) {
             actions = plan.actions,
             online = false
         )
+    }
+
+    /**
+     * Small, transparent offline conversation fallback. This is not a local LLM:
+     * complex reasoning is intentionally left to the configured cloud provider.
+     */
+    private fun localConversationReply(text: String): String? {
+        val t = text.lowercase(Locale.ROOT).trim().trimEnd('.', '!', '?')
+        return when {
+            t.matches(Regex("^(hi|hello|hey|good morning|good afternoon|good evening|hey dec|hey deck)$")) ->
+                "Hello. I'm here with you. You can chat by text or voice, and your conversation is saved on this phone."
+            t in setOf("how are you", "how are you doing", "how is it going") ->
+                "I'm ready to help. What would you like to talk about?"
+            t in setOf("thank you", "thanks", "thanks dec") ->
+                "You're welcome. I'm here whenever you need me."
+            t in setOf("who are you", "what are you") ->
+                "I'm DEC, your phone assistant. I can chat, remember approved details, and help operate your phone when you grant the required permissions."
+            t in setOf("what do you remember about me", "what do you know about me") -> {
+                val facts = prefs.memories()
+                if (facts.isEmpty()) "I don't have any saved facts about you yet."
+                else "Here are the facts you've saved: " + facts.joinToString("; ") { "${it.k}: ${it.v}" }
+            }
+            t in setOf("what can you do offline", "what can you do without internet") ->
+                "Offline, I can handle supported phone commands, use your saved memories, and give simple conversational replies. Deeper reasoning and research need cloud mode."
+            t in setOf("are you private", "is this conversation private") ->
+                if (prefs.localOnlyConversation || prefs.forceOffline) "Local-only mode is enabled. DEC does not send this conversation to its cloud AI provider. Your saved chat is stored encrypted on this phone."
+                else "Your saved conversation is encrypted on this phone, but cloud mode may send your message, recent context, selected memories and requested screen text to your configured AI provider."
+            else -> null
+        }
     }
 
     /**
