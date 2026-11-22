@@ -115,3 +115,21 @@ def test_agent_prompt_describes_observe_plan_act_loop():
     assert '"more": true' in prompt
     assert "[RESULT]" in prompt and "[SCREEN]" in prompt
     assert "up to 8 rounds" in prompt
+
+def test_chat_history_context_limit_is_24(monkeypatch):
+    captured = {}
+
+    class Fake:
+        name = "fake"
+
+        async def complete_json(self, system, messages):
+            captured["messages"] = messages
+            return '{"reply":"continued","actions":[]}'
+
+    monkeypatch.setattr(brain, "chain", lambda: [Fake()])
+    history = [{"role": "user", "content": f"turn-{i}"} for i in range(30)]
+    asyncio.run(brain.chat(ChatRequest(text="continue", history=history)))
+    assert len(captured["messages"]) == 25
+    assert captured["messages"][0]["content"] == "turn-6"
+    assert captured["messages"][-1]["content"] == "continue"
+
