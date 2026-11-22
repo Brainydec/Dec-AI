@@ -85,6 +85,27 @@ class AccessibilityControlService : AccessibilityService() {
         return performGesture(path, 520)
     }
 
+    /** Fallback swipe used when an accessibility scroll action is accepted but does not move content. */
+    suspend fun scrollByGesture(direction: String): Boolean {
+        val root = rootInActiveWindow ?: visibleRoots().maxByOrNull {
+            val rect = Rect()
+            it.getBoundsInScreen(rect)
+            rect.width().toLong() * rect.height().toLong()
+        } ?: return false
+        val bounds = Rect()
+        root.getBoundsInScreen(bounds)
+        val display = resources.displayMetrics
+        bounds.intersect(0, 0, display.widthPixels, display.heightPixels)
+        if (bounds.width() < 80 || bounds.height() < 180) return false
+        val x = bounds.centerX().toFloat()
+        val top = bounds.top.toFloat()
+        val height = bounds.height().toFloat()
+        val movingUp = direction.equals("up", true)
+        val startY = top + height * if (movingUp) 0.78f else 0.22f
+        val endY = top + height * if (movingUp) 0.22f else 0.78f
+        return performSwipe(x, startY, x, endY, 520)
+    }
+
     fun tapText(label: String): Boolean {
         val wanted = normalize(label)
         if (wanted.isBlank()) return false
@@ -348,6 +369,7 @@ class AccessibilityControlService : AccessibilityService() {
         suspend fun dismissRecentsCard(label: String) = active?.dismissRecentsCard(label) ?: false
         suspend fun clearRecents() = active?.clearRecents() ?: false
         suspend fun scrollVisible(direction: String) = active?.scroll(direction) ?: false
+        suspend fun scrollByGesture(direction: String) = active?.scrollByGesture(direction) ?: false
         fun tapVisibleText(label: String) = active?.tapText(label) ?: false
         fun typeIntoFocusedField(value: String) = active?.typeText(value) ?: false
         fun visibleText() = active?.readScreen().orEmpty()
