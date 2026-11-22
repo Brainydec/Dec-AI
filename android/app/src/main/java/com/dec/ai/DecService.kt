@@ -319,12 +319,14 @@ class DecService : Service() {
                 val result = executor.run(tool, args, response.online)
                 results += "$tool -> ${result.ifBlank { "Action returned without a message." }}"
                 if (result.isNotBlank()) finalSpoken = result
-                val terminal = Regex("(?i)\\b(failed|failure|blocked|not allowed|not sent|will not|cancelled|canceled|permission is missing|need the .* permission|could not verify|stopped rather than guessing|I will not|I did not)\\b").containsMatchIn(result)
+                val terminal = Regex("(?i)\\b(could|cannot|can.t|did|failed|failure|blocked|not allowed|not sent|won.t|will not|cancelled|canceled|not enabled|permission is missing|need the .* permission|stopped rather than guessing)\\b").containsMatchIn(result)
                 if (terminal) { stopPlan = true; break }
             }
             if (stopPlan || !response.more || !response.online || step == MAX_AGENT_STEPS - 1) {
                 finished = true
                 if (!response.more && response.reply.isNotBlank()) finalSpoken = response.reply
+                else if (response.more && step == MAX_AGENT_STEPS - 1) finalSpoken = "I reached the eight-step safety limit. The task may need another request to finish."
+                else if (response.more && !response.online) finalSpoken = "I completed the available offline step, but multi-step planning needs an internet connection."
                 break
             }
             val observation = executor.takeObservation()
