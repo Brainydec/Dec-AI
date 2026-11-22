@@ -451,6 +451,7 @@ class Brain(private val ctx: Context) {
     private fun needsScreenContext(text: String): Boolean {
         val command = text.lowercase(Locale.ROOT)
         return listOf(
+            "[result]", "[screen]", "continue the original user task",
             "screen", "tap", "click", "press", "select", "choose",
             "button", "icon", "menu", "this page", "this app",
             "what is open", "what's open", "what can you see"
