@@ -37,6 +37,7 @@ class DecService : Service() {
     override fun onCreate() {
         super.onCreate()
 
+        Dec.initialize(this)
         prefs = Prefs.get(this)
         speech = Speech(this)
         brain = Brain(this)
@@ -109,6 +110,22 @@ class DecService : Service() {
             }
 
             ACTION_TALK -> onTap()
+
+            ACTION_TEXT -> {
+                val text = intent.getStringExtra(EXTRA_TEXT).orEmpty().trim()
+                if (text.isNotBlank() && !stopping && !prefs.emergencyStop) {
+                    job?.cancel()
+                    wake.stop()
+                    Dec.wakeActive.value = false
+                    job = scope.launch {
+                        try {
+                            handle(text, speakReply = false)
+                        } finally {
+                            if (!stopping) goStandby()
+                        }
+                    }
+                }
+            }
 
             ACTION_INCOMING -> announce(
                 intent.getStringExtra("who") ?: "someone"
@@ -290,7 +307,7 @@ class DecService : Service() {
     }
 
     /** Bounded observe-plan-act loop: act, inspect the result, then plan the next dependent step. */
-    private suspend fun handle(said: String) {
+    private suspend fun handle(said: String, speakReply: Boolean = true) {
         Dec.addMessage(Msg(true, said))
         executor.newTask()
         val history = Dec.messages.value.dropLast(1).takeLast(8)
@@ -337,7 +354,10 @@ class DecService : Service() {
             delay(450)
         }
         if (!finished && finalSpoken.isBlank()) finalSpoken = "I stopped because I reached the safe task-step limit."
-        if (finalSpoken.isNotBlank()) { Dec.addMessage(Msg(false, finalSpoken)); say(finalSpoken) }
+        if (finalSpoken.isNotBlank()) {
+            Dec.addMessage(Msg(false, finalSpoken))
+            if (speakReply) say(finalSpoken)
+        }
     }
     private suspend fun say(text: String) {
 
@@ -460,6 +480,8 @@ class DecService : Service() {
         const val ACTION_STOP = "com.dec.ai.STOP"
         const val ACTION_ESTOP = "com.dec.ai.ESTOP"
         const val ACTION_TALK = "com.dec.ai.TALK"
+        const val ACTION_TEXT = "com.dec.ai.TEXT"
+        const val EXTRA_TEXT = "com.dec.ai.TEXT_VALUE"
         const val ACTION_INCOMING = "com.dec.ai.INCOMING"
     }
 }
