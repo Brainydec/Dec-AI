@@ -32,6 +32,9 @@ class DecService : Service() {
     @Volatile
     private var stopping = false
 
+    @Volatile
+    private var textInteraction = false
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -122,9 +125,11 @@ class DecService : Service() {
                     wake.stop()
                     Dec.wakeActive.value = false
                     job = scope.launch {
+                        textInteraction = true
                         try {
                             handle(text, speakReply = false)
                         } finally {
+                            textInteraction = false
                             Dec.wakeActive.value = false
                             Dec.state.value = DecState.OFF
                             stopSelf()
@@ -409,20 +414,13 @@ class DecService : Service() {
 
         Dec.addMessage(Msg(false, question))
 
-        val voice = launch {
-
+        val voice = if (textInteraction) null else launch {
             say("$question Say yes or no.")
 
             if (!decision.isCompleted && !stopping) {
-
                 Dec.state.value = DecState.LISTENING
-
                 val answer = speech.listen(!online())
-
-                Dec.addMessage(
-                    Msg(true, answer ?: "(no answer)")
-                )
-
+                Dec.addMessage(Msg(true, answer ?: "(no answer)"))
                 decision.complete(isYes(answer))
             }
         }
@@ -430,8 +428,8 @@ class DecService : Service() {
         try {
             decision.await()
         } finally {
-            voice.cancel()
-            speech.stopSpeaking()
+            voice?.cancel()
+            if (voice != null) speech.stopSpeaking()
             Dec.pending.value = null
         }
     }
