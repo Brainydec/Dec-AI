@@ -57,6 +57,7 @@ def test_accessibility_tools_are_allowlisted():
         "scroll_screen",
         "read_screen",
         "press_back",
+        "close_app",
         "tap_screen",
         "type_text",
     }
@@ -89,3 +90,9 @@ def test_screen_context_defaults_to_empty():
     req = ChatRequest(text="hello")
     assert req.device.screen_text == ""
     assert req.device.accessibility_connected is False
+
+
+def test_close_app_is_allowlisted():
+    action = brain.clean_actions({"actions": [{"tool": "close_app", "args": {}}]})
+    assert len(action) == 1
+    assert action[0].tool == "close_app"
