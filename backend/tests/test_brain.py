@@ -145,3 +145,53 @@ def test_voice_mode_remains_concise_by_default():
     assert "Response mode: voice" in prompt
     assert "1-3 concise sentences" in prompt
 
+
+
+def test_chat_falls_back_to_next_provider_after_groq_rate_limit(monkeypatch):
+    from app.providers import ProviderError
+
+    class FakeGroq:
+        name = "groq"
+
+        async def complete_json(self, system, messages):
+            raise ProviderError("Groq rate limit reached (429)")
+
+    class FakeGemini:
+        name = "gemini"
+
+        async def complete_json(self, system, messages):
+            return '{"reply":"Gemini handled the request","actions":[]}'
+
+    monkeypatch.setattr(brain, "chain", lambda: [FakeGroq(), FakeGemini()])
+    monkeypatch.setattr(brain.db, "log", lambda *args, **kwargs: None)
+
+    result = asyncio.run(brain.chat(ChatRequest(text="Hello")))
+
+    assert result.provider == "gemini"
+    assert result.reply == "Gemini handled the request"
+
+
+def test_chat_reports_each_provider_failure(monkeypatch):
+    from app.providers import ProviderError
+
+    class FailingProvider:
+        def __init__(self, name):
+            self.name = name
+
+        async def complete_json(self, system, messages):
+            raise ProviderError(f"{self.name} unavailable")
+
+    monkeypatch.setattr(
+        brain, "chain",
+        lambda: [FailingProvider("groq"), FailingProvider("gemini")],
+    )
+    monkeypatch.setattr(brain.db, "log", lambda *args, **kwargs: None)
+
+    try:
+        asyncio.run(brain.chat(ChatRequest(text="Hello")))
+    except ProviderError as error:
+        message = str(error)
+        assert "groq: groq unavailable" in message
+        assert "gemini: gemini unavailable" in message
+    else:
+        raise AssertionError("Expected all-provider failure")
