@@ -25,7 +25,8 @@ import java.util.concurrent.TimeUnit
 data class BrainResult(
     val reply: String,
     val actions: List<Pair<String, JSONObject>>,
-    val online: Boolean
+    val online: Boolean,
+    val more: Boolean = false
 )
 
 class Brain(private val ctx: Context) {
@@ -441,7 +442,8 @@ class Brain(private val ctx: Context) {
                             (action.optJSONObject("args") ?: JSONObject())
                     }
                 },
-                online = true
+                online = true,
+                more = json.optBoolean("more", false)
             )
         }
     }
