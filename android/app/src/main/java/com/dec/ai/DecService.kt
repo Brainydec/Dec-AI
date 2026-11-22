@@ -83,7 +83,11 @@ class DecService : Service() {
                 1,
                 notification(),
                 if (Build.VERSION.SDK_INT >= 29) {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                    if (intent?.action == ACTION_TEXT) {
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                    } else {
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                    }
                 } else {
                     0
                 }
@@ -121,7 +125,9 @@ class DecService : Service() {
                         try {
                             handle(text, speakReply = false)
                         } finally {
-                            if (!stopping) goStandby()
+                            Dec.wakeActive.value = false
+                            Dec.state.value = DecState.OFF
+                            stopSelf()
                         }
                     }
                 }
