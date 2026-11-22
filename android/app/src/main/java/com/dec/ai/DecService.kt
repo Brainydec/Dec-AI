@@ -80,6 +80,16 @@ class DecService : Service() {
         startId: Int
     ): Int {
 
+        // Stop microphone capture before switching this service to dataSync for text chat.
+        val previousTextJob = if (intent?.action == ACTION_TEXT) {
+            textInteraction = true
+            val previous = job
+            previous?.cancel()
+            wake.stop()
+            Dec.wakeActive.value = false
+            previous
+        } else null
+
         try {
             ServiceCompat.startForeground(
                 this,
@@ -121,14 +131,10 @@ class DecService : Service() {
             ACTION_TEXT -> {
                 val text = intent.getStringExtra(EXTRA_TEXT).orEmpty().trim()
                 if (text.isNotBlank() && !stopping && !prefs.emergencyStop) {
-                    textInteraction = true
-                    val previous = job
-                    previous?.cancel()
-                    wake.stop()
-                    Dec.wakeActive.value = false
                     job = scope.launch {
                         try {
-                            previous?.join()
+                            previousTextJob?.join()
+                            textInteraction = true
                             wake.stop()
                             handle(text, speakReply = false)
                         } finally {
