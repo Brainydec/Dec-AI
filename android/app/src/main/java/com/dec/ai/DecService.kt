@@ -32,11 +32,15 @@ class DecService : Service() {
     @Volatile
     private var stopping = false
 
+    @Volatile
+    private var textInteraction = false
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
 
+        Dec.initialize(this)
         prefs = Prefs.get(this)
         speech = Speech(this)
         brain = Brain(this)
@@ -76,13 +80,27 @@ class DecService : Service() {
         startId: Int
     ): Int {
 
+        // Stop microphone capture before switching this service to dataSync for text chat.
+        val previousTextJob = if (intent?.action == ACTION_TEXT) {
+            textInteraction = true
+            val previous = job
+            previous?.cancel()
+            wake.stop()
+            Dec.wakeActive.value = false
+            previous
+        } else null
+
         try {
             ServiceCompat.startForeground(
                 this,
                 1,
                 notification(),
                 if (Build.VERSION.SDK_INT >= 29) {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                    if (intent?.action == ACTION_TEXT) {
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                    } else {
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                    }
                 } else {
                     0
                 }
@@ -109,6 +127,30 @@ class DecService : Service() {
             }
 
             ACTION_TALK -> onTap()
+
+            ACTION_TEXT -> {
+                val text = intent.getStringExtra(EXTRA_TEXT).orEmpty().trim()
+                if (text.isNotBlank() && !stopping && !prefs.emergencyStop) {
+                    job = scope.launch {
+                        try {
+                            previousTextJob?.join()
+                            textInteraction = true
+                            wake.stop()
+                            handle(text, speakReply = false)
+                        } finally {
+                            textInteraction = false
+                            Dec.wakeActive.value = false
+                            Dec.state.value = DecState.OFF
+                            stopSelf()
+                        }
+                    }
+                } else {
+                    textInteraction = false
+                    Dec.wakeActive.value = false
+                    Dec.state.value = DecState.OFF
+                    stopSelf()
+                }
+            }
 
             ACTION_INCOMING -> announce(
                 intent.getStringExtra("who") ?: "someone"
@@ -178,7 +220,7 @@ class DecService : Service() {
 
         Dec.level.value = 0f
 
-        if (stopping || prefs.emergencyStop) {
+        if (stopping || prefs.emergencyStop || textInteraction) {
             wake.stop()
             Dec.wakeActive.value = false
             Dec.state.value = DecState.OFF
@@ -290,10 +332,10 @@ class DecService : Service() {
     }
 
     /** Bounded observe-plan-act loop: act, inspect the result, then plan the next dependent step. */
-    private suspend fun handle(said: String) {
+    private suspend fun handle(said: String, speakReply: Boolean = true) {
         Dec.addMessage(Msg(true, said))
         executor.newTask()
-        val history = Dec.messages.value.dropLast(1).takeLast(8)
+        val history = Dec.messages.value.dropLast(1).takeLast(24)
         val turns = mutableListOf<Msg>()
         var input = said
         var finalSpoken = ""
@@ -303,7 +345,11 @@ class DecService : Service() {
             if (stopping || prefs.emergencyStop) break
             Dec.state.value = DecState.THINKING
             Dec.notice.value = if (step == 0) "DEC is planning..." else "DEC is checking the next step..."
-            val response = brain.ask(input, history + turns)
+            val response = brain.ask(
+                input,
+                history + turns,
+                responseMode = if (speakReply) "voice" else "text"
+            )
             Dec.online.value = response.online
             if (response.actions.isEmpty()) {
                 finalSpoken = response.reply.ifBlank { "I could not determine the next safe step." }
@@ -337,7 +383,10 @@ class DecService : Service() {
             delay(450)
         }
         if (!finished && finalSpoken.isBlank()) finalSpoken = "I stopped because I reached the safe task-step limit."
-        if (finalSpoken.isNotBlank()) { Dec.addMessage(Msg(false, finalSpoken)); say(finalSpoken) }
+        if (finalSpoken.isNotBlank()) {
+            Dec.addMessage(Msg(false, finalSpoken))
+            if (speakReply) say(finalSpoken)
+        }
     }
     private suspend fun say(text: String) {
 
@@ -383,20 +432,13 @@ class DecService : Service() {
 
         Dec.addMessage(Msg(false, question))
 
-        val voice = launch {
-
+        val voice = if (textInteraction) null else launch {
             say("$question Say yes or no.")
 
             if (!decision.isCompleted && !stopping) {
-
                 Dec.state.value = DecState.LISTENING
-
                 val answer = speech.listen(!online())
-
-                Dec.addMessage(
-                    Msg(true, answer ?: "(no answer)")
-                )
-
+                Dec.addMessage(Msg(true, answer ?: "(no answer)"))
                 decision.complete(isYes(answer))
             }
         }
@@ -404,8 +446,8 @@ class DecService : Service() {
         try {
             decision.await()
         } finally {
-            voice.cancel()
-            speech.stopSpeaking()
+            voice?.cancel()
+            if (voice != null) speech.stopSpeaking()
             Dec.pending.value = null
         }
     }
@@ -460,6 +502,8 @@ class DecService : Service() {
         const val ACTION_STOP = "com.dec.ai.STOP"
         const val ACTION_ESTOP = "com.dec.ai.ESTOP"
         const val ACTION_TALK = "com.dec.ai.TALK"
+        const val ACTION_TEXT = "com.dec.ai.TEXT"
+        const val EXTRA_TEXT = "com.dec.ai.TEXT_VALUE"
         const val ACTION_INCOMING = "com.dec.ai.INCOMING"
     }
 }

@@ -113,10 +113,13 @@ private fun HomeScreen() {
     val notice by Dec.notice.collectAsState()
     val resume by Dec.resumeTick.collectAsState()
     var estop by remember { mutableStateOf(prefs.emergencyStop) }
+    var draft by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     LaunchedEffect(msgs.size) { if (msgs.isNotEmpty()) listState.animateScrollToItem(msgs.size - 1) }
 
-    val netNow = remember(resume, state) { Dec.isOnline(ctx) && !prefs.forceOffline }
+    val netNow = remember(resume, state, prefs.forceOffline, prefs.localOnlyConversation) {
+        Dec.isOnline(ctx) && !prefs.forceOffline && !prefs.localOnlyConversation
+    }
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
         if (r[Manifest.permission.RECORD_AUDIO] == true) startDec(ctx)
     }
@@ -130,7 +133,10 @@ private fun HomeScreen() {
 
     Column(Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Chip(if (netNow) "ONLINE" else "OFFLINE", if (netNow) Green else Violet)
+            Chip(
+                if (prefs.localOnlyConversation) "LOCAL ONLY" else if (netNow) "CLOUD AI" else "OFFLINE",
+                if (netNow) Green else Violet
+            )
             Chip(if (wake) "WAKE: ON" else "WAKE: OFF", if (wake) Cyan else Muted)
             Chip("MIC: " + if (state == DecState.LISTENING) "LIVE" else "IDLE", if (state == DecState.LISTENING) Red else Muted)
         }
@@ -148,7 +154,34 @@ private fun HomeScreen() {
         Spacer(Modifier.height(6.dp))
         Waveform(state, level)
         if (notice.isNotBlank()) Text(notice, color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
-        Spacer(Modifier.height(8.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = draft,
+                onValueChange = { draft = it },
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("Message DEC…") },
+                maxLines = 3,
+                enabled = !estop
+            )
+            Spacer(Modifier.width(8.dp))
+            Button(
+                enabled = draft.isNotBlank() && !estop && state != DecState.THINKING,
+                onClick = {
+                    val message = draft.trim()
+                    draft = ""
+                    val intent = Intent(ctx, DecService::class.java)
+                        .setAction(DecService.ACTION_TEXT)
+                        .putExtra(DecService.EXTRA_TEXT, message)
+                    ContextCompat.startForegroundService(ctx, intent)
+                }
+            ) { Text("Send") }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = { Dec.clearConversation(ctx) }) {
+                Text("Clear conversation", color = Red, fontSize = 11.sp)
+            }
+        }
+        Spacer(Modifier.height(4.dp))
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState, verticalArrangement = Arrangement.spacedBy(6.dp)) {
             items(msgs) { m ->
                 Box(Modifier.fillMaxWidth(), contentAlignment = if (m.fromUser) Alignment.CenterEnd else Alignment.CenterStart) {
@@ -468,6 +501,33 @@ private fun SettingsScreen() {
                 }
             )
         }
+
+        var localOnly by remember { mutableStateOf(prefs.localOnlyConversation) }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Local-only conversations", fontWeight = FontWeight.SemiBold)
+                Text("Chat text, history, memories and screen context stay off DEC's cloud AI provider. Offline replies are limited to on-device commands and simple responses. Android voice recognition may use its own service; use text chat for the strongest local-only privacy.", color = Muted, fontSize = 11.sp)
+            }
+            Switch(
+                checked = localOnly,
+                onCheckedChange = {
+                    localOnly = it
+                    prefs.localOnlyConversation = it
+                }
+            )
+        }
+
+        Text(
+            "Hybrid privacy",
+            fontSize = 13.sp,
+            color = Cyan,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            "When Local-only is off, DEC may send your current message, recent chat context, selected memories and requested screen text to your configured AI provider. Your conversation history remains stored encrypted on this phone.",
+            color = Muted,
+            fontSize = 11.sp
+        )
 
         Text(
             "Offline wake word",

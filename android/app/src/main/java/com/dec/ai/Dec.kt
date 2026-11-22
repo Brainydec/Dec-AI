@@ -12,6 +12,15 @@ data class Pending(val question: String, val resolve: (Boolean) -> Unit)
 
 /** Process-wide observable state shared by the service and the UI. */
 object Dec {
+    @Volatile private var appContext: Context? = null
+
+    fun initialize(ctx: Context) {
+        appContext = ctx.applicationContext
+        if (messages.value.isEmpty()) {
+            messages.value = Prefs.get(ctx).conversationHistory()
+        }
+    }
+
     val state = MutableStateFlow(DecState.OFF)
     val messages = MutableStateFlow<List<Msg>>(emptyList())
     val level = MutableStateFlow(0f)
@@ -24,6 +33,12 @@ object Dec {
 
     fun addMessage(m: Msg) {
         messages.value = (messages.value + m).takeLast(200)
+        appContext?.let { Prefs.get(it).appendConversation(m) }
+    }
+
+    fun clearConversation(ctx: Context) {
+        messages.value = emptyList()
+        Prefs.get(ctx).clearConversation()
     }
 
     fun isOnline(ctx: Context): Boolean {

@@ -72,6 +72,40 @@ class Prefs private constructor(ctx: Context) {
     fun deleteMemory(k: String) = saveMem(memories().filter { !it.k.equals(k, true) })
     private fun looksSecret(s: String) = Regex("(?i)password|passcode|\\bpin\\b|otp|cvv|secret|api key|token").containsMatchIn(s)
 
+    // ---- conversation privacy and encrypted chat history ----
+    var localOnlyConversation: Boolean
+        get() = sp.getBoolean("localOnlyConversation", false)
+        set(v) = sp.edit().putBoolean("localOnlyConversation", v).apply()
+
+    fun conversationHistory(): List<Msg> = runCatching {
+        val a = JSONArray(sp.getString("conversation", "[]"))
+        (0 until a.length()).mapNotNull { i ->
+            val o = a.optJSONObject(i) ?: return@mapNotNull null
+            Msg(
+                fromUser = o.optBoolean("u"),
+                text = o.optString("t"),
+                time = o.optLong("time", System.currentTimeMillis())
+            )
+        }.takeLast(200)
+    }.getOrDefault(emptyList())
+
+    fun appendConversation(message: Msg) {
+        val history = conversationHistory().toMutableList()
+        history += message
+        val a = JSONArray()
+        history.takeLast(200).forEach { m ->
+            a.put(JSONObject()
+                .put("u", m.fromUser)
+                .put("t", m.text.take(6000))
+                .put("time", m.time))
+        }
+        sp.edit().putString("conversation", a.toString()).apply()
+    }
+
+    fun clearConversation() {
+        sp.edit().remove("conversation").apply()
+    }
+
     // ---- action history ----
     data class Log(val time: Long, val tool: String, val detail: String, val outcome: String)
     fun history(): List<Log> {

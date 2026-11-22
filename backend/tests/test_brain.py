@@ -115,3 +115,33 @@ def test_agent_prompt_describes_observe_plan_act_loop():
     assert '"more": true' in prompt
     assert "[RESULT]" in prompt and "[SCREEN]" in prompt
     assert "up to 8 rounds" in prompt
+
+def test_chat_history_context_limit_is_24(monkeypatch):
+    captured = {}
+
+    class Fake:
+        name = "fake"
+
+        async def complete_json(self, system, messages):
+            captured["messages"] = messages
+            return '{"reply":"continued","actions":[]}'
+
+    monkeypatch.setattr(brain, "chain", lambda: [Fake()])
+    history = [{"role": "user", "content": f"turn-{i}"} for i in range(30)]
+    asyncio.run(brain.chat(ChatRequest(text="continue", history=history)))
+    assert len(captured["messages"]) == 25
+    assert captured["messages"][0]["content"] == "turn-6"
+    assert captured["messages"][-1]["content"] == "continue"
+
+
+def test_text_mode_prompt_allows_full_natural_answers():
+    prompt = brain.build_system(ChatRequest(text="Help me think this through", response_mode="text"))
+    assert "Response mode: text" in prompt
+    assert "answer naturally and fully" in prompt
+
+
+def test_voice_mode_remains_concise_by_default():
+    prompt = brain.build_system(ChatRequest(text="What time is it?"))
+    assert "Response mode: voice" in prompt
+    assert "1-3 concise sentences" in prompt
+

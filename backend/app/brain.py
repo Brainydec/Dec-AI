@@ -43,7 +43,7 @@ You reply ONLY with one JSON object, no markdown fences:
 {{"reply": "<what to say aloud>", "actions": [{{"tool": "<name>", "args": {{...}}}}], "search_query": null, "more": false}}
 
 Rules:
-- "reply" is spoken aloud: 1-3 short sentences, plain text, no markdown, no emoji.
+- Response mode: {response_mode}. For voice mode, "reply" is spoken aloud: 1-3 concise sentences, plain text, no markdown, no emoji. For text mode, answer naturally and fully at the level of detail the user requests; use readable plain-text paragraphs, and ask a focused follow-up when needed.
 - Use "actions" only for the tools listed below. Never invent tools.
 - For phone calls, SMS and WhatsApp, request the action. The phone asks the user for approval.
 - Never invent phone numbers. Pass the contact name as spoken.
@@ -111,6 +111,7 @@ def build_system(req: ChatRequest) -> str:
     return SYSTEM.format(
         personality=req.personality,
         custom=req.custom_instructions or "none",
+        response_mode=req.response_mode,
         device=_device_str(req.device),
         memories=memories,
         tools=TOOLS,
@@ -210,7 +211,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
             else "user",
             "content": item.content,
         }
-        for item in req.history[-8:]
+        for item in req.history[-24:]
     ]
 
     messages.append({
