@@ -24,7 +24,10 @@ import kotlinx.coroutines.delay
 class Executor(private val ctx: Context, private val confirm: suspend (String) -> Boolean) {
     private val prefs = Prefs.get(ctx)
     private var screenApproved = false
+    private val sensitiveApp = Regex("(?i)bank|wallet|pay|upi|phonepe|paytm|authenticator|keepass|bitwarden|1password|lastpass|password|vault")
+    private val riskyTap = Regex("(?i)\\b(pay|send|transfer|buy|purchase|order|checkout|delete|remove|erase|uninstall|reset|sign out|log ?out|confirm|submit|donate|subscribe|install)\\b")
     fun newTask() { screenApproved = false }
+    private fun sensitiveScreen(): Boolean = AccessibilityControlService.foregroundPackage()?.let { sensitiveApp.containsMatchIn(it) } == true
     suspend fun takeObservation(): String {
         if (!requireAccessibility()) return ""
         delay(700)
@@ -133,7 +136,8 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
 
     private suspend fun scrollScreen(direction: String): String {
         if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
-        if (!approveScreenOnce()) return "Okay, I won't control the screen."
+        if (sensitiveScreen()) return "I will not inspect or control a banking, wallet, or password app."
+        if (!approveScreenOnce()) return "Okay, I will not control the screen."
         val normalized = if (direction.equals("up", true)) "up" else "down"
         val before = listOf(AccessibilityControlService.visibleText(), AccessibilityControlService.visualText())
             .filter { it.isNotBlank() }.joinToString(". ")
@@ -151,7 +155,8 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
 
     private suspend fun readScreen(): String {
         if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
-        if (!approveScreenOnce()) return "Okay, I won't read the screen."
+        if (sensitiveScreen()) return "I will not inspect or control a banking, wallet, or password app."
+        if (!approveScreenOnce()) return "Okay, I will not read the screen."
         val tree = AccessibilityControlService.visibleText()
         val ocr = AccessibilityControlService.visualText()
         val visible = listOf(tree, ocr).filter { it.isNotBlank() }.distinct().joinToString(". ")
@@ -196,7 +201,9 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
     private suspend fun tapScreen(label: String): String {
         if (label.isBlank()) return "Tell me which visible control to tap."
         if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
-        if (!approveScreenOnce()) return "Okay, I won't control the screen."
+        if (sensitiveScreen()) return "I will not inspect or control a banking, wallet, or password app."
+        if (!approveScreenOnce()) return "Okay, I will not control the screen."
+        if (riskyTap.containsMatchIn(label) && !confirm("This action may be sensitive. Tap '$label'?")) return "Okay, I did not tap it."
         val before = listOf(AccessibilityControlService.visibleText(), AccessibilityControlService.visualText())
             .filter { it.isNotBlank() }.joinToString(". ")
         if (!AccessibilityControlService.tapVisibleText(label)) {
@@ -215,7 +222,8 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
     private suspend fun typeText(value: String): String {
         if (value.isBlank()) return "Tell me what text to type."
         if (!requireAccessibility()) return "DEC's Accessibility Service is not enabled. Say open accessibility settings, then enable DEC AI."
-        if (!approveScreenOnce()) return "Okay, I won't control the screen."
+        if (sensitiveScreen()) return "I will not inspect or control a banking, wallet, or password app."
+        if (!approveScreenOnce()) return "Okay, I will not control the screen."
         return if (AccessibilityControlService.typeIntoFocusedField(value)) {
             "Typed the text into the focused field."
         } else {
