@@ -524,7 +524,9 @@ class Brain(private val ctx: Context) {
             .put(
                 "screen_text",
                 if (includeScreen && AccessibilityControlService.isConnected()) {
-                    AccessibilityControlService.visibleText().take(4500)
+                    val tree = AccessibilityControlService.visibleText()
+                    val ocr = AccessibilityControlService.visualText()
+                    listOf(tree, ocr).filter { it.isNotBlank() }.distinct().joinToString(". ").take(5000)
                 } else {
                     ""
                 }
