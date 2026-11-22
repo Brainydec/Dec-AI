@@ -317,7 +317,12 @@ class DecService : Service() {
             if (stopping || prefs.emergencyStop) break
             Dec.state.value = DecState.THINKING
             val result = executor.run(tool, args, response.online)
-            if (result.isNotBlank()) outcomes += result
+            if (result.isNotBlank()) {
+                outcomes += result
+                // A non-empty executor response is a failure, denial, or required
+                // user interaction. Do not continue dependent steps blindly.
+                break
+            }
         }
 
         val spoken = if (outcomes.isNotEmpty()) {
