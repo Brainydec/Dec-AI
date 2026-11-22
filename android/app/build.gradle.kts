@@ -15,6 +15,10 @@ android {
         targetSdk = 34
         versionCode = 2
         versionName = "1.0.1"
+        // DEC AI is currently targeted to the user's 64-bit Redmi device.
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     signingConfigs {
