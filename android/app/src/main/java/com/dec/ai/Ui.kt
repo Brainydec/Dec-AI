@@ -117,7 +117,9 @@ private fun HomeScreen() {
     val listState = rememberLazyListState()
     LaunchedEffect(msgs.size) { if (msgs.isNotEmpty()) listState.animateScrollToItem(msgs.size - 1) }
 
-    val netNow = remember(resume, state) { Dec.isOnline(ctx) && !prefs.forceOffline }
+    val netNow = remember(resume, state, prefs.forceOffline, prefs.localOnlyConversation) {
+        Dec.isOnline(ctx) && !prefs.forceOffline && !prefs.localOnlyConversation
+    }
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
         if (r[Manifest.permission.RECORD_AUDIO] == true) startDec(ctx)
     }
@@ -131,7 +133,10 @@ private fun HomeScreen() {
 
     Column(Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Chip(if (netNow) "ONLINE" else "OFFLINE", if (netNow) Green else Violet)
+            Chip(
+                if (prefs.localOnlyConversation) "LOCAL ONLY" else if (netNow) "CLOUD AI" else "OFFLINE",
+                if (netNow) Green else Violet
+            )
             Chip(if (wake) "WAKE: ON" else "WAKE: OFF", if (wake) Cyan else Muted)
             Chip("MIC: " + if (state == DecState.LISTENING) "LIVE" else "IDLE", if (state == DecState.LISTENING) Red else Muted)
         }
@@ -501,7 +506,7 @@ private fun SettingsScreen() {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Local-only conversations", fontWeight = FontWeight.SemiBold)
-                Text("Never send chat text, history, memories or screen context to the cloud. Offline replies are limited to on-device commands and simple responses.", color = Muted, fontSize = 11.sp)
+                Text("Chat text, history, memories and screen context stay off DEC's cloud AI provider. Offline replies are limited to on-device commands and simple responses. Android voice recognition may use its own service; use text chat for the strongest local-only privacy.", color = Muted, fontSize = 11.sp)
             }
             Switch(
                 checked = localOnly,
