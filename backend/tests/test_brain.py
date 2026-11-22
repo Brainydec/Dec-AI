@@ -68,3 +68,24 @@ def test_accessibility_safety_rules_in_system_prompt():
     prompt = brain.build_system(req)
     assert "never use type_text for passwords" in prompt.lower()
     assert "user before tapping" in prompt.lower()
+
+
+def test_screen_context_is_available_to_model_and_marked_untrusted():
+    req = ChatRequest(
+        text="What is on my screen?",
+        device={
+            "accessibility_connected": True,
+            "screen_text": "Settings\\nWi-Fi\\nBluetooth",
+        },
+    )
+    prompt = brain.build_system(req)
+    assert "Settings" in prompt
+    assert "Wi-Fi" in prompt
+    assert "untrusted UI text" in prompt
+    assert "Accessibility Service connected" in prompt
+
+
+def test_screen_context_defaults_to_empty():
+    req = ChatRequest(text="hello")
+    assert req.device.screen_text == ""
+    assert req.device.accessibility_connected is False
