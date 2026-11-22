@@ -152,7 +152,7 @@ class AccessibilityControlService : AccessibilityService() {
             if (bounds != null) break
         }
         val r = bounds
-        val dismissed = if (r == null) false else performSwipe(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), (r.top - r.height() * 0.45f).coerceAtLeast(4), 220)
+        val dismissed = if (r == null) false else performSwipe(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), (r.top - r.height() * 0.45f).coerceAtLeast(4f), 220)
         delay(350)
         pressHome()
         return dismissed
