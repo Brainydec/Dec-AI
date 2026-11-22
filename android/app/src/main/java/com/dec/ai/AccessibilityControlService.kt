@@ -39,13 +39,23 @@ class AccessibilityControlService : AccessibilityService() {
     }
 
     fun scroll(direction: String): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val roots = visibleRoots()
+        if (roots.isEmpty()) return false
         val action = if (direction.equals("up", true)) {
             AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
         } else {
             AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
         }
-        return findScrollable(root)?.performAction(action) == true
+        // Try every visible scroll container: some apps expose nested lists,
+        // where the first scrollable parent may reject the action.
+        for (root in roots) {
+            val candidates = mutableListOf<AccessibilityNodeInfo>()
+            collectScrollable(root, candidates, 0)
+            for (node in candidates) {
+                if (node.performAction(action)) return true
+            }
+        }
+        return false
     }
 
     fun tapText(label: String): Boolean {
@@ -133,13 +143,18 @@ class AccessibilityControlService : AccessibilityService() {
         return null
     }
 
-    private fun findScrollable(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        if (node.isVisibleToUser && node.isScrollable && node.isEnabled) return node
+    private fun collectScrollable(
+        node: AccessibilityNodeInfo,
+        out: MutableList<AccessibilityNodeInfo>,
+        depth: Int
+    ) {
+        if (depth > 35 || out.size >= 40 || !node.isVisibleToUser) return
+        if (node.isScrollable && node.isEnabled) out += node
         for (i in 0 until node.childCount) {
-            val found = node.getChild(i)?.let { findScrollable(it) }
-            if (found != null) return found
+            val child = node.getChild(i) ?: continue
+            collectScrollable(child, out, depth + 1)
+            if (out.size >= 40) return
         }
-        return null
     }
 
     private fun collectText(
