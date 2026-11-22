@@ -27,6 +27,7 @@ class Executor(private val ctx: Context, private val confirm: suspend (String) -
     fun newTask() { screenApproved = false }
     suspend fun takeObservation(): String {
         if (!requireAccessibility()) return ""
+        delay(700)
         val tree = AccessibilityControlService.visibleText()
         val ocr = AccessibilityControlService.visualText()
         return listOf(tree, ocr).filter { it.isNotBlank() }.distinct().joinToString(". ").take(4500)
