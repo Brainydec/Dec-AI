@@ -370,6 +370,12 @@ object OfflineParser {
             )
         }
 
+        // ---------------- APP EXIT / HOME ----------------
+
+        if (t in setOf("close app", "close this app", "exit app", "exit this app", "go to home screen", "return to home screen", "go home", "home screen")) {
+            return Plan("", listOf(a("close_app")))
+        }
+
         // ---------------- ACCESSIBILITY / SCREEN CONTROLS ----------------
 
         if (t in setOf("open accessibility settings", "enable accessibility", "accessibility settings")) {
