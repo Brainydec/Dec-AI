@@ -151,6 +151,7 @@ KNOWN_TOOLS = {
     "scroll_screen",
     "read_screen",
     "press_back",
+    "close_app",
     "tap_screen",
     "type_text",
     "set_alarm",
