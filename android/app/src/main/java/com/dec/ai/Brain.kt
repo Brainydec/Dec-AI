@@ -46,8 +46,18 @@ class Brain(private val ctx: Context) {
     suspend fun ask(text: String, history: List<Msg>): BrainResult =
         withContext(Dispatchers.IO) {
 
-            // Deterministic device and screen commands must never be sent to a cloud
-            // model first. Execute these locally so wording variations cannot derail them.
+            // Requests that depend on understanding the current screen must reach the
+            // model with the live visible UI context. Other deterministic device commands
+            // remain local-first for reliability and speed.
+            if (needsScreenContext(text) && canUseCloud()) {
+                try {
+                    return@withContext cloud(text, history)
+                } catch (e: Exception) {
+                    Log.w("DEC", "screen-aware cloud request failed: ${e.message}")
+                    Dec.notice.value = "screen analysis unavailable: ${e.message}"
+                }
+            }
+
             val local = parseDeviceCommand(text) ?: parseAccessibilityCommand(text)
             if (local != null) return@withContext local
 
