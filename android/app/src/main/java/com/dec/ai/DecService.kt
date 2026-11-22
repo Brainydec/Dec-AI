@@ -345,7 +345,11 @@ class DecService : Service() {
             if (stopping || prefs.emergencyStop) break
             Dec.state.value = DecState.THINKING
             Dec.notice.value = if (step == 0) "DEC is planning..." else "DEC is checking the next step..."
-            val response = brain.ask(input, history + turns)
+            val response = brain.ask(
+                input,
+                history + turns,
+                responseMode = if (speakReply) "voice" else "text"
+            )
             Dec.online.value = response.online
             if (response.actions.isEmpty()) {
                 finalSpoken = response.reply.ifBlank { "I could not determine the next safe step." }
