@@ -316,7 +316,7 @@ class DecService : Service() {
     private suspend fun handle(said: String, speakReply: Boolean = true) {
         Dec.addMessage(Msg(true, said))
         executor.newTask()
-        val history = Dec.messages.value.dropLast(1).takeLast(8)
+        val history = Dec.messages.value.dropLast(1).takeLast(24)
         val turns = mutableListOf<Msg>()
         var input = said
         var finalSpoken = ""
