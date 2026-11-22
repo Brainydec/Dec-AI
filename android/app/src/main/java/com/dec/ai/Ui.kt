@@ -159,7 +159,7 @@ private fun HomeScreen() {
                 value = draft,
                 onValueChange = { draft = it },
                 modifier = Modifier.weight(1f),
-                placeholder = { Text("Talk to DEC privately…") },
+                placeholder = { Text("Message DEC…") },
                 maxLines = 3,
                 enabled = !estop
             )
